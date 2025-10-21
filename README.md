@@ -12,36 +12,83 @@ Un serveur MCP (Model-Context-Protocol) puissant pour l'orchestration de tâches
 - **Outils de Monitoring** : Surveillez les ressources système, le statut des services (systemd, Docker, PM2) et Fail2Ban.
 - **Outils de Logs** : Récupérez les logs de PM2, Docker, ou suivez la fin d'un fichier (`tail`).
 
+---
+
 ## 📦 Installation
 
-Ce projet est conçu pour être utilisé comme un outil MCP dans un environnement compatible (comme la `gemini-cli` ou `claude-code`).
+Vous avez deux méthodes pour utiliser cet outil :
 
-Enregistrez ce MCP auprès de votre client en utilisant la configuration suivante :
+### Méthode 1 : Via NPM (Recommandé)
+
+C'est la méthode la plus simple. L'outil sera téléchargé et exécuté à la demande par `npx`.
+
+Enregistrez ce MCP auprès de votre client (ex: `gemini-cli`) avec la configuration suivante :
 
 ```json
 {
   "mcpServers": {
-    "mcp-sftp-orchestrator": {
+    "orchestrator": {
       "command": "npx",
       "args": [
         "@fkom13/mcp-sftp-orchestrator"
       ],
       "env": {
-        "MCP_DATA_DIR": "~/.config/mcp-orchestrator"
+        "MCP_DATA_DIR": "/chemin/absolu/vers/votre/dossier/de/donnees"
       }
     }
   }
 }
 ```
+**Important** : Remplacez `/chemin/absolu/vers/votre/dossier/de/donnees` par un chemin réel sur votre machine, par exemple `~/.config/mcp-orchestrator`.
 
-Le client MCP lancera automatiquement le serveur via `npx` lors de son premier appel.
+### Méthode 2 : Depuis les Sources (Git)
+
+Cette méthode est utile si vous souhaitez modifier le code.
+
+1.  **Clonez le dépôt :**
+    ```bash
+    git clone https://github.com/fkom13/mcp-sftp-orchestrator.git
+    cd mcp-sftp-orchestrator
+    ```
+
+2.  **Installez les dépendances :**
+    ```bash
+    npm install
+    ```
+
+3.  **Configurez votre client MCP** pour lancer le script localement :
+    ```json
+    {
+      "mcpServers": {
+        "orchestrator": {
+          "command": "node",
+          "args": [
+            "/chemin/vers/mcp-sftp-orchestrator/server.js"
+          ],
+          "env": {
+            "MCP_DATA_DIR": "/chemin/vers/mcp-sftp-orchestrator/data"
+          }
+        }
+      }
+    }
+    ```
+
+---
 
 ## 🛠️ Configuration
 
-Le serveur est configurable via des variables d'environnement. Vous pouvez créer un fichier `.env` à la racine du projet si vous l'exécutez localement pour le développement.
+La configuration du serveur se fait par ordre de priorité :
 
-- `MCP_DATA_DIR`: Le dossier où seront stockées les données (configurations des serveurs, historique, etc.). Par défaut : `~/.config/mcp-orchestrator`.
+1.  **Variables d'environnement du client MCP** (le bloc `env` dans votre JSON) : **Priorité la plus haute**. C'est la méthode recommandée pour définir le dossier de données.
+2.  **Fichier `.env`** : Si vous lancez le projet localement (méthode 2), vous pouvez créer un fichier `.env` à la racine. Il sera utilisé si la variable n'est pas définie par le client MCP.
+3.  **Valeurs par défaut** : Si rien n'est défini, le dossier de données par défaut sera `~/.config/mcp-orchestrator`.
+
+**Variables disponibles :**
+
+- `MCP_DATA_DIR`: (Recommandé) Le dossier où seront stockées les données (configurations des serveurs, historique, etc.).
 - `MCP_SYNC_TIMEOUT_S`: Le délai en secondes avant qu'une tâche longue ne passe en arrière-plan. Par défaut : `30`.
+
+---
 
 ## 🧰 Référence des Outils (API)
 
@@ -92,6 +139,8 @@ Voici la liste complète des outils exposés par ce serveur MCP.
 
 - `task_logs`: Affiche les logs du système MCP lui-même.
 - `pool_stats`: Affiche les statistiques du pool de connexions SSH.
+
+---
 
 ## 🤝 Contribution
 

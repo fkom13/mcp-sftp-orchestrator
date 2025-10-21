@@ -14,7 +14,7 @@ Un serveur MCP (Model-Context-Protocol) puissant pour l'orchestration de tâches
 
 ## 📦 Installation
 
-Ce projet est conçu pour être utilisé comme un outil MCP dans un environnement compatible (comme la `gemini-cli`).
+Ce projet est conçu pour être utilisé comme un outil MCP dans un environnement compatible (comme la `gemini-cli` ou `claude-code`).
 
 Enregistrez ce MCP auprès de votre client en utilisant la configuration suivante :
 

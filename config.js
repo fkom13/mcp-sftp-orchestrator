@@ -21,12 +21,39 @@ const args = process.argv.slice(2).reduce((acc, arg) => {
 }, {});
 
 const config = {
-    // La hiérarchie reste la même : les arguments en ligne de commande écrasent le .env, qui écrase le défaut.
     dataDir: args['data-dir'] || process.env.MCP_DATA_DIR || path.join(os.homedir(), '.config', 'mcp-orchestrator'),
-    syncTimeout: parseInt(args['sync-timeout'] || process.env.MCP_SYNC_TIMEOUT_S || '10', 10) * 1000,
+    
+    // Timeouts en millisecondes (plus cohérent)
+    syncTimeout: parseInt(args['sync-timeout'] || process.env.MCP_SYNC_TIMEOUT_S || '30', 10) * 1000,
     defaultCommandTimeout: parseInt(process.env.MCP_DEFAULT_CMD_TIMEOUT_MS || '300000', 10),
-    interactiveCommandTimeout: parseInt(process.env.MCP_INTERACTIVE_CMD_TIMEOUT_MS || '120000', 10)
+    interactiveCommandTimeout: parseInt(process.env.MCP_INTERACTIVE_CMD_TIMEOUT_MS || '120000', 10),
+    
+    // Configuration Pool SSH
+    maxConnectionsPerServer: parseInt(process.env.MAX_CONNECTIONS_PER_SERVER || '5', 10),
+    minConnectionsPerServer: parseInt(process.env.MIN_CONNECTIONS_PER_SERVER || '1', 10),
+    idleTimeout: parseInt(process.env.IDLE_TIMEOUT || '300000', 10),
+    keepAliveInterval: parseInt(process.env.KEEP_ALIVE_INTERVAL || '30000', 10),
+    
+    // Configuration Queue
+    maxQueueSize: parseInt(process.env.MAX_QUEUE_SIZE || '1000', 10),
+    saveInterval: parseInt(process.env.SAVE_INTERVAL || '5000', 10),
+    historyRetention: parseInt(process.env.HISTORY_RETENTION || '2678400000', 10), // 31 jours
 };
+
+// Validation
+if (config.syncTimeout < 1000) {
+    if (process.env.MCP_DEBUG === 'true') {
+        console.error('⚠️ syncTimeout trop court, minimum 1000ms');
+    }
+    config.syncTimeout = 1000;
+}
+
+if (config.maxConnectionsPerServer < config.minConnectionsPerServer) {
+    if (process.env.MCP_DEBUG === 'true') {
+        console.error('⚠️ maxConnections < minConnections, ajustement automatique');
+    }
+    config.maxConnectionsPerServer = config.minConnectionsPerServer;
+}
 
 // Créer le dossier de données s'il n'existe pas
 fs.mkdirSync(config.dataDir, { recursive: true });

@@ -1,14 +1,39 @@
-#!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+console.error("✅ McpServer importé");
+
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+console.error("✅ StdioServerTransport importé");
+
 import { z } from "zod";
+console.error("✅ zod importé");
+
 import queue from './queue.js';
+console.error("✅ queue importé");
+
 import servers from './servers.js';
+console.error("✅ servers importé");
+
 import sftp from './sftp.js';
+console.error("✅ sftp importé");
+
 import ssh from './ssh.js';
+console.error("✅ ssh importé");
+
 import history from './history.js';
+console.error("✅ history importé");
+
 import config from './config.js';
+console.error("✅ config importé");
+
 import apis from './apis.js';
+console.error("✅ apis importé");
+
+console.error("=== TOUS LES IMPORTS RÉUSSIS ===");
+
+// ✅ INITIALISER EXPLICITEMENT ET ATTENDRE
+console.error("⏳ Initialisation de la queue...");
+await queue.init();
+console.error("✅ Queue initialisée");
 
 const server = new McpServer({
     name: "orchestrator",
@@ -16,7 +41,12 @@ const server = new McpServer({
     description: "Serveur pour l'orchestration de tâches distantes avec exécution hybride et configuration flexible."
 });
 
+console.error("✅ Serveur MCP créé");
+
+
 // --- OUTILS DE GESTION DES SERVEURS ---
+console.error("✅ Serveur MCP créé");
+
 server.registerTool(
     "server_add",
     {
@@ -53,7 +83,7 @@ server.registerTool(
     {
         title: "Lister les alias de serveurs",
         description: "Affiche la liste de tous les alias de serveurs configurés avec leurs détails.",
-        inputSchema: {}
+        inputSchema: z.object({})
     },
     async () => {
         const serverList = await servers.listServers();
@@ -66,9 +96,9 @@ server.registerTool(
     {
         title: "Supprimer un alias de serveur",
         description: "Supprime un alias de serveur de la configuration.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Nom de l'alias à supprimer")
-        }
+        })
     },
     async (params) => {
         try {
@@ -91,7 +121,7 @@ server.registerTool(
     {
         title: "Ajouter une API au catalogue",
         description: "Ajoute ou met à jour une API dans le catalogue de monitoring.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias unique pour l'API."),
             url: z.string().url().describe("URL de base de l'API, incluant le port si nécessaire."),
             health_check_endpoint: z.string().optional().describe("Endpoint spécifique pour le test de santé (ex: /health)."),
@@ -103,7 +133,7 @@ server.registerTool(
             htpasswd_user: z.string().optional().describe("Nom d'utilisateur pour l'authentification Basic (htpasswd)."),
             htpasswd_pass: z.string().optional().describe("Mot de passe pour l'authentification Basic (htpasswd)."),
             notes: z.string().optional().describe("Notes additionnelles.")
-        }
+        })
     },
     async (params) => {
         try {
@@ -121,7 +151,7 @@ server.registerTool(
     {
         title: "Lister les APIs du catalogue",
         description: "Affiche toutes les APIs configurées dans le catalogue.",
-        inputSchema: {}
+        inputSchema: z.object({})
     },
     async () => {
         const apiList = await apis.listApis();
@@ -134,9 +164,9 @@ server.registerTool(
     {
         title: "Supprimer une API du catalogue",
         description: "Supprime une API du catalogue en utilisant son alias.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias de l'API à supprimer.")
-        }
+        })
     },
     async (params) => {
         try {
@@ -153,10 +183,10 @@ server.registerTool(
     {
         title: "Vérifier la santé d'une API via son alias",
         description: "Lance un test de santé sur une API du catalogue.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias de l'API à tester."),
             server_alias: z.string().describe("Alias du serveur depuis lequel lancer le test.")
-        }
+        })
     },
     async (params) => {
         try {
@@ -202,9 +232,9 @@ server.registerTool(
     {
         title: "Obtenir les ressources système d'un VPS",
         description: "Récupère les métriques système vitales (CPU, RAM, Disque) d'un serveur.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible.")
-        }
+        })
     },
     async (params) => {
         try {
@@ -238,9 +268,9 @@ server.registerTool(
     {
         title: "Obtenir le statut des services d'un VPS",
         description: "Récupère le statut de tous les services connus (systemd, Docker, PM2) sur un serveur.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible.")
-        }
+        })
     },
     async (params) => {
         try {
@@ -275,10 +305,10 @@ server.registerTool(
     {
         title: "Vérifier la santé d'une API",
         description: "Vérifie la disponibilité et le temps de réponse d'un endpoint HTTP/S.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur depuis lequel lancer le test."),
             url: z.string().url().describe("URL complète de l'endpoint à tester.")
-        }
+        })
     },
     async (params) => {
         try {
@@ -313,10 +343,10 @@ server.registerTool(
     {
         title: "Obtenir le statut de Fail2Ban",
         description: "Récupère les informations du service Fail2Ban, pour toutes les jails ou une jail spécifique.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             jail: z.string().optional().describe("Nom d'une jail spécifique à inspecter (ex: sshd). Laissez vide pour un statut général.")
-        }
+        })
     },
     async (params) => {
         try {
@@ -369,14 +399,14 @@ server.registerTool(
     "task_transfer",
     {
         title: "Transférer un fichier ou dossier (SFTP)",
-                    description: `Lance un transfert SFTP. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan.`,
-                    inputSchema: {
+                    description: `Lance un transfert SFTP. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan.`, 
+                    inputSchema: z.object({
                         alias: z.string().describe("Alias du serveur cible."),
                     direction: z.enum(['upload', 'download']),
                     local: z.string().describe("Chemin absolu local."),
                     remote: z.string().describe("Chemin absolu distant."),
                     rappel: z.number().optional().describe("Définit un rappel en secondes.")
-                    }
+                    })
     },
     async (params) => {
         const job = queue.addJob({ type: 'sftp', ...params, status: 'pending' });
@@ -397,12 +427,12 @@ server.registerTool(
     "task_exec",
     {
         title: "Exécuter une commande à distance (SSH)",
-                    description: `Exécute une commande SSH. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan.`,
-                    inputSchema: {
+                    description: `Exécute une commande SSH. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan.`, 
+                    inputSchema: z.object({
                         alias: z.string().describe("Alias du serveur cible."),
                     cmd: z.string().describe("La commande complète à exécuter."),
                     rappel: z.number().optional().describe("Définit un rappel en secondes.")
-                    }
+                    })
     },
     async (params) => {
         const job = queue.addJob({ type: 'ssh', ...params, status: 'pending' });
@@ -434,7 +464,7 @@ server.registerTool(
     {
         title: "Voir la file d'attente des tâches",
         description: "Affiche le statut de toutes les tâches, avec des rappels pour les tâches longues.",
-        inputSchema: {}
+        inputSchema: z.object({})
     },
     async () => {
         const queueState = queue.getQueue();
@@ -448,9 +478,9 @@ server.registerTool(
     {
         title: "Consulter une tâche par son ID",
         description: "Récupère les détails d'une seule tâche, avec un rappel si nécessaire.",
-        inputSchema: {
+        inputSchema: z.object({
             id: z.string().describe("L'ID de la tâche à consulter.")
-        }
+        })
     },
     async (params) => {
         const job = queue.getJob(params.id);
@@ -466,9 +496,9 @@ server.registerTool(
     {
         title: "Consulter l'historique des tâches",
         description: "Affiche les dernières tâches lancées. Peut être filtré par alias.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().optional().describe("Filtre l'historique pour ne montrer que les tâches d'un alias spécifique.")
-        }
+        })
     },
     async (params) => {
         const historyLogs = await history.getHistory(params);
@@ -483,7 +513,7 @@ server.registerTool(
     {
         title: "Transférer plusieurs fichiers/dossiers (SFTP)",
         description: "Lance des transferts SFTP multiples avec support de patterns glob (*, ?, []).",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             direction: z.enum(['upload', 'download']),
             files: z.array(z.object({
@@ -491,7 +521,7 @@ server.registerTool(
                 remote: z.string().describe("Chemin distant")
             })).describe("Liste des fichiers à transférer"),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
-        }
+        })
     },
     async (params) => {
         const job = queue.addJob({ 
@@ -517,7 +547,7 @@ server.registerTool(
     {
         title: "Exécuter une commande interactive (SSH)",
         description: "Exécute une commande SSH avec gestion des prompts interactifs (yes/no, passwords, etc.).",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             cmd: z.string().describe("La commande à exécuter."),
             interactive: z.boolean().optional().default(true).describe("Mode interactif."),
@@ -525,7 +555,7 @@ server.registerTool(
             responses: z.record(z.string()).optional().describe("Réponses personnalisées aux prompts (clé: pattern, valeur: réponse)."),
             timeout: z.number().optional().describe("Timeout personnalisé en secondes. Défaut 2 minutes."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
-        }
+        })
     },
     async (params) => {
         const job = queue.addJob({ 
@@ -552,7 +582,7 @@ server.registerTool(
     {
         title: "Exécuter une séquence de commandes (SSH)",
         description: "Exécute plusieurs commandes SSH en séquence sur le même serveur.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             commands: z.array(z.union([
                 z.string(),
@@ -561,10 +591,10 @@ server.registerTool(
                     timeout: z.number().optional(),
                     continueOnError: z.boolean().optional()
                 })
-            ])).describe("Liste des commandes à exécuter en séquence."),
+            ])).min(1).describe("Liste des commandes à exécuter en séquence (minimum 1)."),
             continueOnError: z.boolean().optional().default(false).describe("Continuer même si une commande échoue."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
-        }
+        })
     },
     async (params) => {
         const job = queue.addJob({ 
@@ -589,7 +619,7 @@ server.registerTool(
     {
         title: "Statistiques du pool de connexions SSH",
         description: "Affiche les statistiques du pool de connexions SSH persistantes.",
-        inputSchema: {}
+        inputSchema: z.object({})
     },
     async () => {
         const stats = ssh.getPoolStats();
@@ -602,7 +632,7 @@ server.registerTool(
     {
         title: "Statistiques de la queue",
         description: "Affiche les statistiques détaillées de la queue de tâches.",
-        inputSchema: {}
+        inputSchema: z.object({})
     },
     async () => {
         const stats = queue.getStats();
@@ -621,9 +651,9 @@ server.registerTool(
     {
         title: "Réessayer une tâche échouée",
         description: "Relance une tâche qui a échoué ou crashé.",
-        inputSchema: {
+        inputSchema: z.object({
             id: z.string().describe("L'ID de la tâche à réessayer.")
-        }
+        })
     },
     async (params) => {
         try {
@@ -655,11 +685,11 @@ server.registerTool(
     {
         title: "Consulter les logs système",
         description: "Affiche les logs du système MCP.",
-        inputSchema: {
+        inputSchema: z.object({
             level: z.enum(['error', 'warn', 'info', 'debug']).optional().describe("Filtrer par niveau de log."),
             search: z.string().optional().describe("Rechercher dans les messages."),
             limit: z.number().optional().default(50).describe("Nombre de logs à afficher.")
-        }
+        })
     },
     async (params) => {
         const logs = queue.getLogs({
@@ -677,12 +707,12 @@ server.registerTool(
     {
         title: "Récupérer les logs PM2",
         description: "Raccourci pour récupérer les logs PM2 d'une application spécifique ou de toutes les apps.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             app: z.string().optional().describe("Nom de l'application PM2 (optionnel, toutes par défaut)."),
             lines: z.number().optional().default(100).describe("Nombre de lignes à récupérer."),
             errors: z.boolean().optional().default(false).describe("Récupérer uniquement les erreurs (stderr).")
-        }
+        })
     },
     async (params) => {
         let cmd = 'pm2 logs';
@@ -708,13 +738,13 @@ server.registerTool(
     {
         title: "Récupérer les logs Docker",
         description: "Raccourci pour récupérer les logs d'un container Docker.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             container: z.string().describe("Nom ou ID du container Docker."),
             lines: z.number().optional().default(100).describe("Nombre de lignes à récupérer."),
             since: z.string().optional().describe("Logs depuis (ex: '5m', '1h', '2024-01-01')."),
             timestamps: z.boolean().optional().default(false).describe("Afficher les timestamps.")
-        }
+        })
     },
     async (params) => {
         let cmd = `docker logs --tail ${params.lines}`;
@@ -740,11 +770,11 @@ server.registerTool(
     {
         title: "Afficher les dernières lignes d'un fichier",
         description: "Équivalent de tail -n pour afficher les dernières lignes d'un fichier distant.",
-        inputSchema: {
+        inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             filepath: z.string().describe("Chemin absolu du fichier à lire."),
             lines: z.number().optional().default(50).describe("Nombre de lignes à afficher.")
-        }
+        })
     },
     async (params) => {
         const cmd = `tail -n ${params.lines} ${params.filepath}`;
@@ -763,8 +793,10 @@ server.registerTool(
 
 // --- DÉMARRAGE DU SERVEUR ---
 async function main() {
+    console.error("🔌 Connexion du transport stdio...");
     const transport = new StdioServerTransport();
     await server.connect(transport);
+    console.error("🚀 Serveur connecté et prêt !");
 }
 
 main().catch((error) => {

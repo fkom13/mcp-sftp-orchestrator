@@ -467,10 +467,40 @@ function parseServicesStatus(output) {
 }
 
 function parseApiHealth(output) {
+    if (!output || typeof output !== 'string') {
+        return { 
+            status: 'ERROR', 
+            http_code: 0, 
+            response_time_ms: 0, 
+            error: 'Sortie invalide ou vide' 
+        };
+    }
+    
     try {
-        const [codeStr, timeStr] = output.split(':');
+        const parts = output.trim().split(':');
+        if (parts.length !== 2) {
+            return {
+                status: 'ERROR',
+                http_code: 0,
+                response_time_ms: 0,
+                error: 'Format de réponse invalide',
+                raw_output: output
+            };
+        }
+        
+        const [codeStr, timeStr] = parts;
         const http_code = parseInt(codeStr, 10);
         const response_time_ms = parseFloat(timeStr) * 1000;
+        
+        if (isNaN(http_code) || isNaN(response_time_ms)) {
+            return {
+                status: 'ERROR',
+                http_code: 0,
+                response_time_ms: 0,
+                error: 'Valeurs non numériques',
+                raw_output: output
+            };
+        }
 
         return {
             status: http_code >= 200 && http_code < 300 ? 'UP' : 'DOWN',
@@ -478,7 +508,13 @@ function parseApiHealth(output) {
             response_time_ms: Math.round(response_time_ms)
         };
     } catch (e) {
-        return { status: 'ERROR', http_code: 0, response_time_ms: 0, parsing_error: e.message, raw_output: output };
+        return { 
+            status: 'ERROR', 
+            http_code: 0, 
+            response_time_ms: 0, 
+            error: e.message, 
+            raw_output: output 
+        };
     }
 }
 

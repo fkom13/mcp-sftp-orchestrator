@@ -1,5 +1,6 @@
 import SftpClient from 'ssh2-sftp-client';
 import fs from 'fs/promises';
+import { createWriteStream } from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import queue from './queue.js';
@@ -19,18 +20,25 @@ async function ensureLocalDir(filePath) {
 
 // Fonction pour créer un dossier distant si nécessaire
 async function ensureRemoteDir(sftp, filePath) {
-    const dir = path.dirname(filePath);
+    const dir = path.posix.dirname(filePath); // Utiliser posix pour les chemins distants
+    
+    if (dir === '/' || dir === '.') {
+        return; // Pas besoin de créer la racine
+    }
+    
     try {
         const exists = await sftp.exists(dir);
         if (!exists) {
-            await sftp.mkdir(dir, true);
+            await sftp.mkdir(dir, true); // true pour créer récursivement
             queue.log('info', `Dossier distant créé: ${dir}`);
         }
     } catch (err) {
-        // Si le dossier existe déjà, on ignore l'erreur
-        if (!err.message.includes('already exists')) {
-            throw err;
+        // Vérifier si c'est vraiment une erreur ou si le dossier existe déjà
+        const exists = await sftp.exists(dir).catch(() => false);
+        if (!exists) {
+            throw new Error(`Impossible de créer le dossier distant ${dir}: ${err.message}`);
         }
+        // Sinon, le dossier existe, on continue
     }
 }
 
@@ -58,13 +66,13 @@ async function expandFileList(pattern, basePath = '') {
 
     // Si c'est un pattern glob
     if (pattern.includes('*') || pattern.includes('?') || pattern.includes('[')) {
-        const fullPattern = path.join(normalizedBasePath, pattern);
+        const fullPattern = path.resolve(normalizedBasePath, pattern);
         const files = await glob(fullPattern, { nodir: false });
         return files;
     }
 
     // Sinon c'est un fichier/dossier simple
-    const fullPath = path.join(normalizedBasePath, pattern);
+    const fullPath = path.resolve(normalizedBasePath, pattern);
     return [fullPath];
 }
 
@@ -198,19 +206,18 @@ async function handleDownload(sftp, remotePath, localPath) {
             }
 
             // S'assurer que le dossier local existe
-            await ensureLocalDir(localPath);
+            await fs.mkdir(localPath, { recursive: true });
 
             // Télécharger chaque fichier correspondant
             for (const fileName of matchingFiles) {
                 const remoteFile = path.join(parentDir, fileName);
                 const localFile = path.join(localPath, fileName);
                 queue.log('info', `Téléchargement (glob): ${remoteFile} -> ${localFile}`);
-                await sftp.get(remoteFile, localFile);
+                const destinationStream = createWriteStream(localFile);
+                await sftp.get(remoteFile, destinationStream);
             }
-            // Retourner le nombre de fichiers téléchargés pour le rapport
             return matchingFiles.length;
         } catch (err) {
-            // Si le dossier parent n'existe pas, on propage l'erreur
             if (err.code === 2) {
                  throw new Error(`Le dossier parent pour le glob n'existe pas: ${parentDir}`);
             }
@@ -218,21 +225,26 @@ async function handleDownload(sftp, remotePath, localPath) {
         }
 
     } else {
-        // Comportement normal pour un fichier ou un dossier unique
+        // Comportement pour un fichier ou un dossier unique
         const exists = await sftp.exists(remotePath);
         if (!exists) {
             throw new Error(`Fichier distant introuvable: ${remotePath}`);
         }
 
-        const stats = await sftp.stat(remotePath);
-        await ensureLocalDir(localPath);
-
+const stats = await sftp.stat(remotePath);
+        
         if (stats.isDirectory) {
+            await fs.mkdir(localPath, { recursive: true });
             await sftp.downloadDir(remotePath, localPath);
         } else {
-            await sftp.get(remotePath, localPath);
+            // Correction : localPath est le dossier, on ajoute le nom du fichier distant
+            const finalLocalPath = path.join(localPath, path.basename(remotePath));
+            const localDir = path.dirname(finalLocalPath);
+            await fs.mkdir(localDir, { recursive: true });
+            const destinationStream = createWriteStream(finalLocalPath);
+            await sftp.get(remotePath, destinationStream);
         }
-        return 1; // Un seul item téléchargé
+        return 1;
     }
 }
 

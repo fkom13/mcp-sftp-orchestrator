@@ -45,6 +45,23 @@ async function saveApis() {
 // Ajouter ou mettre à jour une API
 async function addApi(alias, apiConfig) {
     await ensureInitialized();
+    
+    // Validation
+    if (!alias || typeof alias !== 'string') {
+        throw new Error("L'alias doit être une chaîne non vide.");
+    }
+    
+    if (!apiConfig.url) {
+        throw new Error("L'URL de l'API est obligatoire.");
+    }
+    
+    // Valider l'URL
+    try {
+        new URL(apiConfig.url);
+    } catch (e) {
+        throw new Error(`URL invalide: ${apiConfig.url}`);
+    }
+    
     apis[alias] = apiConfig;
     await saveApis();
     return { success: true, message: `API '${alias}' ajoutée/mise à jour avec succès.` };

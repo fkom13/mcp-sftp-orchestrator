@@ -2,15 +2,17 @@ import { Client } from 'ssh2';
 import fs from 'fs/promises';
 import queue from './queue.js';
 
+import config from './config.js';
+
 class SSHConnectionPool {
     constructor() {
         this.pools = new Map(); // Map<serverAlias, Connection[]>
         this.activeConnections = new Map(); // Map<connectionId, {conn, serverAlias, inUse, lastUsed}>
         this.config = {
-            maxConnections: 5,      // Max connexions par serveur
-            minConnections: 1,      // Min connexions maintenues
-            idleTimeout: 300000,    // 5 minutes avant fermeture si inactif
-            keepAliveInterval: 30000, // Keep-alive toutes les 30s
+            maxConnections: config.maxConnectionsPerServer,
+            minConnections: config.minConnectionsPerServer,
+            idleTimeout: config.idleTimeout,
+            keepAliveInterval: config.keepAliveInterval,
             connectionTimeout: 20000,
             retryAttempts: 3
         };

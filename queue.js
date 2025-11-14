@@ -5,8 +5,11 @@ import config from './config.js';
 
 const QUEUE_FILE = path.join(config.dataDir, 'queue.json');
 const QUEUE_BACKUP = path.join(config.dataDir, 'queue.backup.json');
-const SAVE_INTERVAL = 5000; // Sauvegarder toutes les 5 secondes
-const MAX_QUEUE_SIZE = 1000; // Limite de tâches en mémoire
+const SAVE_INTERVAL = 5000;
+const MAX_QUEUE_SIZE = 1000;
+
+// ✅ Mode silencieux par défaut (logs désactivés sauf si MCP_DEBUG=true)
+const SILENT_MODE = process.env.MCP_DEBUG !== 'true';
 
 const jobQueue = {};
 const logHistory = [];
@@ -21,14 +24,11 @@ async function loadQueue() {
         const data = await fs.readFile(QUEUE_FILE, 'utf-8');
         const savedQueue = JSON.parse(data);
         
-        // Restaurer les tâches non terminées
         for (const [id, job] of Object.entries(savedQueue)) {
-            // Convertir les dates string en objets Date
             if (job.createdAt) job.createdAt = new Date(job.createdAt);
             if (job.updatedAt) job.updatedAt = new Date(job.updatedAt);
             if (job.reminderAt) job.reminderAt = new Date(job.reminderAt);
             
-            // Marquer les tâches running comme crashed
             if (job.status === 'running') {
                 job.status = 'crashed';
                 job.crashedAt = new Date();
@@ -44,7 +44,6 @@ async function loadQueue() {
         if (err.code !== 'ENOENT') {
             log('error', `Erreur lors du chargement de la queue: ${err.message}`);
             
-            // Essayer de charger la sauvegarde de secours
             try {
                 const backupData = await fs.readFile(QUEUE_BACKUP, 'utf-8');
                 const backupQueue = JSON.parse(backupData);
@@ -59,26 +58,23 @@ async function loadQueue() {
 
 let isSaving = false;
 
-// Sauvegarder la queue
 async function saveQueue() {
     if (!isDirty || isSaving) return;
     
     isSaving = true;
     try {
-        // Créer une sauvegarde de l'ancienne queue
         try {
             await fs.copyFile(QUEUE_FILE, QUEUE_BACKUP);
         } catch (e) {
-            // Ignorer si le fichier n'existe pas encore
+            // Ignorer si le fichier n'existe pas
         }
         
-        // Filtrer les tâches terminées anciennes (garder 24h)
         const now = Date.now();
         const filteredQueue = {};
         
         for (const [id, job] of Object.entries(jobQueue)) {
             const age = now - new Date(job.createdAt).getTime();
-            const isRecent = age < 86400000; // 24 heures
+            const isRecent = age < 86400000;
             const isActive = ['pending', 'running', 'crashed'].includes(job.status);
             
             if (isActive || isRecent) {
@@ -86,7 +82,6 @@ async function saveQueue() {
             }
         }
         
-        // Sauvegarder la queue filtrée
         await fs.writeFile(
             QUEUE_FILE, 
             JSON.stringify(filteredQueue, null, 2)
@@ -101,7 +96,6 @@ async function saveQueue() {
     }
 }
 
-// Démarrer la sauvegarde automatique
 function startAutoSave() {
     if (saveTimer) clearInterval(saveTimer);
     
@@ -110,7 +104,6 @@ function startAutoSave() {
     }, SAVE_INTERVAL);
 }
 
-// Arrêter la sauvegarde automatique
 function stopAutoSave() {
     if (saveTimer) {
         clearInterval(saveTimer);
@@ -125,8 +118,8 @@ function log(level, message) {
         logHistory.shift();
     }
     
-    // Afficher les logs importants
-    if (['error', 'warn', 'info'].includes(level)) {
+    // ✅ N'afficher les logs que si MCP_DEBUG=true
+    if (!SILENT_MODE && ['error', 'warn', 'info'].includes(level)) {
         const prefix = {
             error: '[❌ ERROR]',
             warn: '[⚠️  WARN]',
@@ -134,14 +127,13 @@ function log(level, message) {
             debug: '[🔧 DEBUG]'
         }[level] || `[${level.toUpperCase()}]`;
         
-        console.log(`${prefix} ${new Date().toISOString().split('T')[1].split('.')[0]} - ${message}`);
+        // ✅ TOUJOURS utiliser stderr (pas stdout)
+        console.error(`${prefix} ${new Date().toISOString().split('T')[1].split('.')[0]} - ${message}`);
     }
 }
 
 function addJob(details) {
-    // Vérifier la taille de la queue
     if (Object.keys(jobQueue).length >= MAX_QUEUE_SIZE) {
-        // Nettoyer les vieilles tâches terminées
         cleanOldJobs();
         
         if (Object.keys(jobQueue).length >= MAX_QUEUE_SIZE) {
@@ -175,7 +167,6 @@ function updateJobStatus(id, status, data = {}) {
         jobQueue[id].status = status;
         jobQueue[id].updatedAt = new Date();
         
-        // Copier toutes les données supplémentaires
         Object.assign(jobQueue[id], data);
 
         if (data.error) {
@@ -216,14 +207,26 @@ function getLogs(filter = {}) {
     });
 }
 
-// Nettoyer les vieilles tâches terminées
 function cleanOldJobs() {
     const now = Date.now();
     const toDelete = [];
+    const MAX_AGE = 86400000;
     
     for (const [id, job] of Object.entries(jobQueue)) {
-        const age = now - new Date(job.createdAt).getTime();
-        const isOld = age > 86400000; // Plus de 24h
+        const createdAt = job.createdAt ? new Date(job.createdAt).getTime() : now;
+        if (isNaN(createdAt)) {
+            log('warn', `Tâche ${id} a une date de création invalide, conservation`);
+            continue;
+        }
+        
+        const age = now - createdAt;
+        
+        if (age < 0) {
+            log('warn', `Tâche ${id} a une date dans le futur, conservation`);
+            continue;
+        }
+        
+        const isOld = age > MAX_AGE;
         const isCompleted = ['completed', 'failed'].includes(job.status);
         
         if (isOld && isCompleted) {
@@ -241,7 +244,6 @@ function cleanOldJobs() {
     }
 }
 
-// Réessayer une tâche échouée ou crashed
 async function retryJob(id) {
     const job = jobQueue[id];
     if (!job) {
@@ -256,7 +258,6 @@ async function retryJob(id) {
         throw new Error(`La tâche ${id} a atteint le nombre max de tentatives (${job.maxRetries})`);
     }
     
-    // Créer une nouvelle tâche basée sur l'ancienne
     const newJob = {
         ...job,
         id: uuidv4().split('-')[0],
@@ -281,7 +282,6 @@ async function retryJob(id) {
     return newJob;
 }
 
-// Obtenir les tâches crashées qui peuvent être reprises
 function getCrashedJobs() {
     return Object.values(jobQueue).filter(job => 
         job.status === 'crashed' && 
@@ -290,7 +290,6 @@ function getCrashedJobs() {
     );
 }
 
-// Statistiques de la queue
 function getStats() {
     const stats = {
         total: Object.keys(jobQueue).length,
@@ -304,13 +303,9 @@ function getStats() {
     let completedCount = 0;
     
     for (const job of Object.values(jobQueue)) {
-        // Par statut
         stats.byStatus[job.status] = (stats.byStatus[job.status] || 0) + 1;
-        
-        // Par type
         stats.byType[job.type] = (stats.byType[job.type] || 0) + 1;
         
-        // Durée moyenne
         if (job.duration) {
             totalDuration += job.duration;
             completedCount++;
@@ -329,23 +324,18 @@ function getStats() {
     return stats;
 }
 
-// Initialiser le module
 async function init() {
     await loadQueue();
     startAutoSave();
-    
-    // Nettoyer périodiquement
-    setInterval(cleanOldJobs, 3600000); // Toutes les heures
+    setInterval(cleanOldJobs, 3600000);
 }
 
-// Arrêter proprement
 async function shutdown() {
     log('info', 'Arrêt du gestionnaire de queue...');
     stopAutoSave();
     await saveQueue();
 }
 
-// Gérer l'arrêt du processus
 process.on('SIGINT', async () => {
     await shutdown();
     process.exit(0);
@@ -356,10 +346,6 @@ process.on('SIGTERM', async () => {
     process.exit(0);
 });
 
-// Démarrer automatiquement
-init().catch(err => {
-    console.error('Erreur lors de l'initialisation de la queue:', err);
-});
 
 export default { 
     addJob, 
@@ -373,5 +359,6 @@ export default {
     getStats,
     cleanOldJobs,
     saveQueue,
-    shutdown
+    shutdown,
+    init
 };

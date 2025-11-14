@@ -1,6 +1,7 @@
 {
   "name": "mcp-orchestrator-server",
   "version": "8.0.2",
+  "mcpName": "io.github.fkom13/mcp-sftp-orchestrator",
   "description": "Un serveur MCP stdio pour l'orchestration de tâches distantes avec exécution hybride (synchrone/asynchrone) et configuration flexible.",
   "main": "server.js",
   "type": "module",

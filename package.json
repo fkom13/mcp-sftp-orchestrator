@@ -1,6 +1,6 @@
 {
   "name": "mcp-orchestrator-server",
-  "version": "8.0.1",
+  "version": "8.0.2",
   "description": "Un serveur MCP stdio pour l'orchestration de tâches distantes avec exécution hybride (synchrone/asynchrone) et configuration flexible.",
   "main": "server.js",
   "type": "module",

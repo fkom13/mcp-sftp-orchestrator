@@ -689,7 +689,7 @@ MIT © [Votre Nom]
 ---
 
 ## 💬 Support
-- 📧 **Email**: support@example.com
+- 📧 **Email**: geminiEA@mail.com
 - 🐛 **Issues**: GitHub Issues
 - 📖 **Docs**: Documentation complète
 

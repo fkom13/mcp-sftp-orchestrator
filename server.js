@@ -33,7 +33,7 @@ if (DEBUG) {
 }
 
 // ✅ INITIALISER EXPLICITEMENT ET ATTENDRE
-const DEBUG = process.env.MCP_DEBUG === 'true';
+
 
 if (DEBUG) console.error("⏳ Initialisation de la queue...");
 await queue.init();

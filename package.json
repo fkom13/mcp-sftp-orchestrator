@@ -1,24 +1,15 @@
 {
-  "name": "mcp-orchestrator-server",
-  "version": "8.0.5",
-  "description": "Serveur MCP pour l'orchestration de tâches distantes (SSH/SFTP) avec une file d'attente persistante.",
+  "name": "@fkom13/mcp-sftp-orchestrator",
+  "version": "8.1.0",
+  "description": "Un serveur MCP stdio pour l'orchestration de tâches distantes avec exécution hybride (synchrone/asynchrone) et configuration flexible.",
   "main": "server.js",
   "type": "module",
   "mcpName": "io.github.fkom13/mcp-sftp-orchestrator",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/fkom13/mcp-sftp-orchestrator.git"
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test_mcp.js && node test_features.js",
+    "test:integration": "node test_features.js"
   },
-  "keywords": [
-    "mcp",
-    "orchestrator",
-    "ssh",
-    "sftp",
-    "devops",
-    "automation"
-  ],
-  "author": "fkom13 <geminiEA@mail.com>",
-  "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.0",
     "dotenv": "^16.4.5",

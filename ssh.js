@@ -38,19 +38,19 @@ const INTERACTIVE_RESPONSES = {
 // Détecte si une sortie contient un prompt interactif
 function detectInteractivePrompt(output) {
     const lastLine = output.split('\n').pop().toLowerCase();
-    
+
     for (const [pattern, response] of Object.entries(INTERACTIVE_RESPONSES)) {
         if (lastLine.includes(pattern.toLowerCase())) {
             return { pattern, response, needsInput: true };
         }
     }
-    
+
     // Vérifier les patterns qui attendent une entrée
-    if (lastLine.endsWith(':') || lastLine.endsWith('?') || 
+    if (lastLine.endsWith(':') || lastLine.endsWith('?') ||
         lastLine.includes('[y/n]') || lastLine.includes('(yes/no)')) {
         return { pattern: 'generic', response: null, needsInput: true };
     }
-    
+
     return { needsInput: false };
 }
 
@@ -60,14 +60,14 @@ async function executeCommand(jobId) {
     if (!job) return queue.log('error', `Tâche introuvable: ${jobId}`);
 
     let connection = null;
-    
+
     try {
         const serverConfig = await serverManager.getServer(job.alias);
         queue.updateJobStatus(jobId, 'running');
 
         // Utiliser le pool de connexions si pas de mode interactif
         const usePool = !job.interactive && job.persistent !== false;
-        
+
         if (usePool) {
             // Obtenir une connexion du pool
             connection = await sshPool.getConnection(job.alias, serverConfig);
@@ -76,7 +76,7 @@ async function executeCommand(jobId) {
             // Créer une connexion dédiée pour les commandes interactives
             await executeWithNewConnection(serverConfig, job, jobId);
         }
-        
+
     } catch (err) {
         queue.updateJobStatus(jobId, 'failed', { error: err.message });
     } finally {
@@ -88,7 +88,7 @@ async function executeCommand(jobId) {
 }
 
 // Exécution avec une connexion du pool
-async function executeWithPooledConnection(connection, job, jobId) {
+async function executeWithPooledConnection(connection, job, jobId, updateQueue = true) {
     return new Promise((resolve, reject) => {
         const { client } = connection;
 
@@ -119,38 +119,41 @@ async function executeWithPooledConnection(connection, job, jobId) {
                 reject(err);
                 return;
             }
-            
+
             let output = '';
             let stderr = '';
             let lineCount = 0;
             const startTime = Date.now();
             const maxLines = job.maxLines || 1000;
             const timeout = job.timeout || config.defaultCommandTimeout;
-            
+
             const timeoutId = setTimeout(() => {
                 stream.write('\x03'); // Envoyer Ctrl+C
                 setTimeout(() => {
                     stream.close();
                     const duration = Date.now() - startTime;
                     const result = { output: output.trim(), stderr: stderr.trim(), exitCode: 124, duration, lineCount, timedOut: true };
-                    queue.updateJobStatus(jobId, 'completed', result);
+                    if (updateQueue) queue.updateJobStatus(jobId, 'completed', result);
                     resolve(result);
                 }, 500);
             }, timeout);
-            
+
             stream.on('close', (code, signal) => {
                 clearTimeout(timeoutId);
                 const duration = Date.now() - startTime;
                 const result = { output: output.trim(), stderr: stderr.trim(), exitCode: code, signal, duration, lineCount };
+
+                // Important: clear any other timeouts if they exist (though timeoutId is the main one here)
+
                 if (code === 0 || code === 124) {
-                    queue.updateJobStatus(jobId, 'completed', result);
+                    if (updateQueue) queue.updateJobStatus(jobId, 'completed', result);
                     resolve(result);
                 } else {
-                    queue.updateJobStatus(jobId, 'failed', { ...result, error: `Commande terminée avec code ${code}` });
+                    if (updateQueue) queue.updateJobStatus(jobId, 'failed', { ...result, error: `Commande terminée avec code ${code}` });
                     reject(new Error(`Exit code: ${code}`));
                 }
             });
-            
+
             stream.on('data', (data) => {
                 const chunk = data.toString();
                 output += chunk;
@@ -167,7 +170,7 @@ async function executeWithPooledConnection(connection, job, jobId) {
                     }
                 }
             });
-            
+
             stream.stderr.on('data', (data) => {
                 stderr += data.toString();
             });
@@ -200,7 +203,7 @@ async function executeWithNewConnection(serverConfig, job, jobId) {
                     try {
                         stream.end();
                         conn.end();
-                    } catch(e) {/* ignore */}
+                    } catch (e) {/* ignore */ }
                     resolve(result);
                 };
 
@@ -209,6 +212,7 @@ async function executeWithNewConnection(serverConfig, job, jobId) {
                 }, (job.timeout ? job.timeout * 1000 : config.interactiveCommandTimeout));
 
                 stream.on('close', () => {
+                    clearTimeout(jobTimeout); // Always clear timeout on close
                     if (!output.includes(END_MARKER)) {
                         cleanupAndResolve('failed');
                     }
@@ -226,7 +230,7 @@ async function executeWithNewConnection(serverConfig, job, jobId) {
                     if (!responseSent && job.autoRespond) {
                         const lowerChunk = chunk.toLowerCase();
                         let responseToSend = null;
-                        
+
                         // Chercher une réponse personnalisée
                         for (const [pattern, response] of Object.entries(responses)) {
                             if (lowerChunk.includes(pattern.toLowerCase())) {
@@ -235,7 +239,7 @@ async function executeWithNewConnection(serverConfig, job, jobId) {
                                 break;
                             }
                         }
-                        
+
                         // Sinon, chercher une réponse par défaut
                         if (!responseToSend) {
                             for (const [pattern, response] of Object.entries(INTERACTIVE_RESPONSES)) {
@@ -270,11 +274,11 @@ async function executeWithNewConnection(serverConfig, job, jobId) {
             reject(err);
         });
 
-        const connectConfig = { 
-            host: serverConfig.host, 
-            port: 22, 
-            username: serverConfig.user, 
-            readyTimeout: 20000 
+        const connectConfig = {
+            host: serverConfig.host,
+            port: 22,
+            username: serverConfig.user,
+            readyTimeout: 20000
         };
 
         (async () => {
@@ -302,17 +306,17 @@ async function executeWithNewConnection(serverConfig, job, jobId) {
 async function executeCommandSequence(jobId) {
     const job = queue.getJob(jobId);
     if (!job) return queue.log('error', `Tâche introuvable: ${jobId}`);
-    
+
     const results = [];
     let connection = null;
-    
+
     try {
         const serverConfig = await serverManager.getServer(job.alias);
         queue.updateJobStatus(jobId, 'running');
-        
+
         // Obtenir une connexion du pool
         connection = await sshPool.getConnection(job.alias, serverConfig);
-        
+
         // Exécuter chaque commande en séquence
         for (let i = 0; i < job.commands.length; i++) {
             const cmd = job.commands[i];
@@ -322,36 +326,37 @@ async function executeCommandSequence(jobId) {
                 timeout: cmd.timeout || job.timeout,
                 continueOnError: cmd.continueOnError || job.continueOnError
             };
-            
+
             try {
-                queue.log('info', `Exécution étape ${i+1}/${job.commands.length}: ${stepJob.cmd}`);
-                const result = await executeWithPooledConnection(connection, stepJob, `${jobId}_step_${i}`);
-                results.push({ 
-                    step: i + 1, 
-                    command: stepJob.cmd, 
-                    success: true, 
-                    ...result 
+                queue.log('info', `Exécution étape ${i + 1}/${job.commands.length}: ${stepJob.cmd}`);
+                // Don't update the main queue for sub-steps with phantom IDs
+                const result = await executeWithPooledConnection(connection, stepJob, `${jobId}_step_${i}`, false);
+                results.push({
+                    step: i + 1,
+                    command: stepJob.cmd,
+                    success: true,
+                    ...result
                 });
             } catch (err) {
-                results.push({ 
-                    step: i + 1, 
-                    command: stepJob.cmd, 
-                    success: false, 
-                    error: err.message 
+                results.push({
+                    step: i + 1,
+                    command: stepJob.cmd,
+                    success: false,
+                    error: err.message
                 });
-                
+
                 if (!stepJob.continueOnError) {
-                    throw new Error(`Échec à l'étape ${i+1}: ${err.message}`);
+                    throw new Error(`Échec à l'étape ${i + 1}: ${err.message}`);
                 }
             }
         }
-        
+
         queue.updateJobStatus(jobId, 'completed', { results });
-        
+
     } catch (err) {
-        queue.updateJobStatus(jobId, 'failed', { 
-            error: err.message, 
-            results 
+        queue.updateJobStatus(jobId, 'failed', {
+            error: err.message,
+            results
         });
     } finally {
         if (connection) {
@@ -468,14 +473,14 @@ function parseServicesStatus(output) {
 
 function parseApiHealth(output) {
     if (!output || typeof output !== 'string') {
-        return { 
-            status: 'ERROR', 
-            http_code: 0, 
-            response_time_ms: 0, 
-            error: 'Sortie invalide ou vide' 
+        return {
+            status: 'ERROR',
+            http_code: 0,
+            response_time_ms: 0,
+            error: 'Sortie invalide ou vide'
         };
     }
-    
+
     try {
         const parts = output.trim().split(':');
         if (parts.length !== 2) {
@@ -487,11 +492,11 @@ function parseApiHealth(output) {
                 raw_output: output
             };
         }
-        
+
         const [codeStr, timeStr] = parts;
         const http_code = parseInt(codeStr, 10);
         const response_time_ms = parseFloat(timeStr) * 1000;
-        
+
         if (isNaN(http_code) || isNaN(response_time_ms)) {
             return {
                 status: 'ERROR',
@@ -508,21 +513,21 @@ function parseApiHealth(output) {
             response_time_ms: Math.round(response_time_ms)
         };
     } catch (e) {
-        return { 
-            status: 'ERROR', 
-            http_code: 0, 
-            response_time_ms: 0, 
-            error: e.message, 
-            raw_output: output 
+        return {
+            status: 'ERROR',
+            http_code: 0,
+            response_time_ms: 0,
+            error: e.message,
+            raw_output: output
         };
     }
 }
 
-export default { 
-    executeCommand, 
-    executeCommandSequence, 
-    getPoolStats, 
-    parseSystemResources, 
-    parseServicesStatus, 
-    parseApiHealth 
+export default {
+    executeCommand,
+    executeCommandSequence,
+    getPoolStats,
+    parseSystemResources,
+    parseServicesStatus,
+    parseApiHealth
 };

@@ -138,9 +138,12 @@ Voici la liste complète des outils exposés par ce serveur MCP.
 
 ### Monitoring & Diagnostics
 
-- `get_system_resources`: Récupère les métriques système vitales (CPU, RAM, Disque).
-- `get_services_status`: Récupère le statut des services (systemd, Docker, PM2).
-- `get_fail2ban_status`: Récupère les informations du service Fail2Ban.
+| Outil                   | Description                                     |
+| :---------------------- | :---------------------------------------------- |
+| `get_system_resources`  | Récupère les métriques système vitales (CPU, RAM, Disque). |
+| `get_services_status`   | Récupère le statut des services (systemd, Docker, PM2). |
+| `get_fail2ban_status`   | Récupère les informations du service Fail2Ban.  |
+| `check_api_health`      | Test HTTP direct sur une URL (sans catalogue).  |
 
 ### Récupération de Logs
 
@@ -170,9 +173,15 @@ Voici la liste complète des outils exposés par ce serveur MCP.
 
 ---
 
+### Prérequis
+- Node.js >= 18.0.0
+- npm ou yarn
+- Accès SSH aux serveurs cibles
+
 ### Installation rapide
 
 ```bash
+
 # Cloner le dépôt
 git clone https://github.com/fkom13/mcp-sftp-orchestrator.git
 cd mcp-sftp-orchestrator
@@ -180,25 +189,24 @@ cd mcp-sftp-orchestrator
 # Installer les dépendances
 npm install
 
-# Copier et configurer l'environnement
+# Copier et configurer l`environnement
 cp .env.example .env
 nano .env
 
 # Démarrer le serveur
 node server.js
-```
 
-### ⚙️ Configuration
+⚙️ Configuration
+Variables d`environnement (.env)
+Bash
 
-#### Variables d'environnement (.env)
-```bash
 # Répertoire de données (configs, historique, queue)
 MCP_DATA_DIR="/home/user/.config/mcp-orchestrator"
 
 # Délai avant passage en arrière-plan (secondes)
 MCP_SYNC_TIMEOUT_S=30
 
-# Timeouts d'exécution (millisecondes)
+# Timeouts d`exécution (millisecondes)
 MCP_DEFAULT_CMD_TIMEOUT_MS=300000      # 5 minutes
 MCP_INTERACTIVE_CMD_TIMEOUT_MS=120000  # 2 minutes
 
@@ -215,26 +223,22 @@ HISTORY_RETENTION=2678400000  # 31 jours
 
 # Debug log wraper erreor in stdio.error
 MCP_DEBUG=false
-```
 
-#### Structure des données
-```text
+Structure des données
+text
+
 ~/.config/mcp-orchestrator/
 ├── servers.json      # Configurations serveurs
 ├── apis.json         # Catalogue d`APIs
 ├── queue.json        # Queue de tâches
 ├── queue.backup.json # Backup de sécurité
 └── history.json      # Historique
-```
 
----
+🛠️ Guide d`Utilisation
+1. Configuration d`un serveur
+JavaScript
 
-## 🛠️ Guide d'Utilisation
-
-### 1. Configuration d'un serveur
-
-#### Avec clé SSH
-```json
+// Avec clé SSH
 {
   "tool": "server_add",
   "arguments": {
@@ -244,10 +248,8 @@ MCP_DEBUG=false
     "keyPath": "/home/user/.ssh/id_rsa"
   }
 }
-```
 
-#### Avec mot de passe
-```json
+// Avec mot de passe
 {
   "tool": "server_add",
   "arguments": {
@@ -257,12 +259,10 @@ MCP_DEBUG=false
     "password": "SecureP@ssw0rd"
   }
 }
-```
+2. Exécution de commandes
+Commande simple
+JavaScript
 
-### 2. Exécution de commandes
-
-#### Commande simple
-```json
 {
   "tool": "task_exec",
   "arguments": {
@@ -270,10 +270,9 @@ MCP_DEBUG=false
     "cmd": "uptime && df -h"
   }
 }
-```
+Commande interactive
+JavaScript
 
-#### Commande interactive
-```json
 {
   "tool": "task_exec_interactive",
   "arguments": {
@@ -286,10 +285,9 @@ MCP_DEBUG=false
     }
   }
 }
-```
+Séquence de commandes
+JavaScript
 
-#### Séquence de commandes
-```json
 {
   "tool": "task_exec_sequence",
   "arguments": {
@@ -303,12 +301,10 @@ MCP_DEBUG=false
     "continueOnError": false
   }
 }
-```
+3. Transferts SFTP
+Upload simple
+JavaScript
 
-### 3. Transferts SFTP
-
-#### Upload simple
-```json
 {
   "tool": "task_transfer",
   "arguments": {
@@ -318,10 +314,9 @@ MCP_DEBUG=false
     "remote": "/etc/app/config.json"
   }
 }
-```
+Transferts multiples avec glob
+JavaScript
 
-#### Transferts multiples avec glob
-```json
 {
   "tool": "task_transfer_multi",
   "arguments": {
@@ -339,34 +334,30 @@ MCP_DEBUG=false
     ]
   }
 }
-```
+4. Monitoring
+Ressources système
+JavaScript
 
-### 4. Monitoring
-
-#### Ressources système
-```json
 {
   "tool": "get_system_resources",
   "arguments": {
     "alias": "prod_vps"
   }
 }
-```
-*Retourne: CPU, RAM, Disque, Load Average*
+// Retourne: CPU, RAM, Disque, Load Average
+Statut des services
+JavaScript
 
-#### Statut des services
-```json
 {
   "tool": "get_services_status",
   "arguments": {
     "alias": "prod_vps"
   }
 }
-```
-*Retourne: systemd, Docker, PM2*
+// Retourne: systemd, Docker, PM2
+Logs Docker
+JavaScript
 
-#### Logs Docker
-```json
 {
   "tool": "get_docker_logs",
   "arguments": {
@@ -377,10 +368,9 @@ MCP_DEBUG=false
     "timestamps": true
   }
 }
-```
+Logs PM2
+JavaScript
 
-#### Logs PM2
-```json
 {
   "tool": "get_pm2_logs",
   "arguments": {
@@ -390,12 +380,10 @@ MCP_DEBUG=false
     "errors": true
   }
 }
-```
+5. Catalogue d`APIs
+Ajouter une API
+JavaScript
 
-### 5. Catalogue d'APIs
-
-#### Ajouter une API
-```json
 {
   "tool": "api_add",
   "arguments": {
@@ -409,10 +397,9 @@ MCP_DEBUG=false
     "auth_scheme": ""
   }
 }
-```
+Vérifier une API
+JavaScript
 
-#### Vérifier une API
-```json
 {
   "tool": "api_check",
   "arguments": {
@@ -420,64 +407,54 @@ MCP_DEBUG=false
     "server_alias": "prod_vps"
   }
 }
-```
-*Retourne: status (UP/DOWN), http_code, response_time_ms*
+// Retourne: status (UP/DOWN), http_code, response_time_ms
+6. Gestion de la Queue
+Voir toutes les tâches
+JavaScript
 
-### 6. Gestion de la Queue
-
-#### Voir toutes les tâches
-```json
 {
   "tool": "task_queue",
   "arguments": {}
 }
-```
+Statut d`une tâche
+JavaScript
 
-#### Statut d'une tâche
-```json
 {
   "tool": "task_status",
   "arguments": {
     "id": "a3f8c2d1"
   }
 }
-```
+Réessayer une tâche
+JavaScript
 
-#### Réessayer une tâche
-```json
 {
   "tool": "task_retry",
   "arguments": {
     "id": "a3f8c2d1"
   }
 }
-```
+Statistiques
+JavaScript
 
-#### Statistiques
-```json
 {
   "tool": "queue_stats",
   "arguments": {}
 }
-```
-*Retourne: total, byStatus, byType, avgDuration, successRate*
+// Retourne: total, byStatus, byType, avgDuration, successRate
+Diagnostic complet
+JavaScript
 
-#### Diagnostic complet
-```json
 {
   "tool": "system_diagnostics",
   "arguments": {
     "verbose": true
   }
 }
-```
+🏗️ Architecture
+Composants Principaux
+text
 
----
-
-## 🏗️ Architecture
-
-### Composants Principaux
-```text
 ┌─────────────────────────────────────────────┐
 │           MCP Server (server.js)            │
 │  • Enregistrement des tools                 │
@@ -507,10 +484,9 @@ MCP_DEBUG=false
       │  • History       │
       │  • Persistence   │
       └──────────────────┘
-```
+Flux d`Exécution
+text
 
-### Flux d'Exécution
-```text
 Client → Tool Call → Validation → Job Creation
                                        ↓
                               Pool Get Connection
@@ -527,24 +503,18 @@ Client → Tool Call → Validation → Job Creation
                     Update Queue              Update Queue
                          │                            │
                     Save History              Save History
-```
+📊 Gestion des Erreurs
+Codes d`erreur
+Code	Description	Action recommandée
+CONNECTION_FAILED	Échec de connexion SSH	Vérifier host/port/réseau
+AUTH_FAILED	Authentification refusée	Vérifier user/key/password
+COMMAND_TIMEOUT	Commande timeout	Augmenter timeout ou vérifier commande
+TRANSFER_FAILED	Échec de transfert	Vérifier chemins et permissions
+QUEUE_FULL	Queue saturée	Nettoyer ou augmenter MAX_QUEUE_SIZE
+RETRY_LIMIT_EXCEEDED	Max tentatives atteint	Vérifier la cause et retry manuellement
+Exemple de réponse d`erreur
+JSON
 
----
-
-## 📊 Gestion des Erreurs
-
-### Codes d'erreur
-| Code                 | Description                      | Action recommandée                          |
-|----------------------|----------------------------------|---------------------------------------------|
-| `CONNECTION_FAILED`  | Échec de connexion SSH           | Vérifier host/port/réseau                   |
-| `AUTH_FAILED`        | Authentification refusée         | Vérifier user/key/password                  |
-| `COMMAND_TIMEOUT`    | Commande timeout                 | Augmenter timeout ou vérifier commande      |
-| `TRANSFER_FAILED`    | Échec de transfert               | Vérifier chemins et permissions             |
-| `QUEUE_FULL`         | Queue saturée                    | Nettoyer ou augmenter `MAX_QUEUE_SIZE`      |
-| `RETRY_LIMIT_EXCEEDED`| Max tentatives atteint           | Vérifier la cause et retry manuellement     |
-
-### Exemple de réponse d'erreur
-```json
 {
   "error": true,
   "code": "CONNECTION_FAILED",
@@ -556,34 +526,29 @@ Client → Tool Call → Validation → Job Creation
   },
   "timestamp": "2024-11-14T10:30:45.123Z"
 }
-```
+🔒 Sécurité
+Bonnes pratiques
+Clés SSH
 
----
+Utilisez des clés plutôt que des mots de passe
+Protégez vos clés privées (chmod 600)
+Utilisez des passphrases
+Permissions
 
-## 🔒 Sécurité
+Limitez l`accès au répertoire MCP_DATA_DIR
+Ne commitez jamais .env ou les fichiers de données
+Réseau
 
-### Bonnes pratiques
+Utilisez un VPN ou bastion pour l`accès SSH
+Configurez Fail2Ban sur les serveurs
+Limitez les IPs autorisées
+Mots de passe
 
-#### Clés SSH
-- Utilisez des clés plutôt que des mots de passe.
-- Protégez vos clés privées (`chmod 600`).
-- Utilisez des passphrases.
+Stockez-les dans des variables d`environnement
+Utilisez des gestionnaires de secrets (Vault, etc.)
+Fichiers à exclure du versioning
+gitignore
 
-#### Permissions
-- Limitez l'accès au répertoire `MCP_DATA_DIR`.
-- Ne commitez jamais `.env` ou les fichiers de données.
-
-#### Réseau
-- Utilisez un VPN ou bastion pour l'accès SSH.
-- Configurez Fail2Ban sur les serveurs.
-- Limitez les IPs autorisées.
-
-#### Mots de passe
-- Stockez-les dans des variables d'environnement.
-- Utilisez des gestionnaires de secrets (Vault, etc.).
-
-### Fichiers à exclure du versioning
-```gitignore
 # .gitignore
 .env
 data/
@@ -593,13 +558,9 @@ node_modules/
 logs/
 *.log
 .DS_Store
-```
+🧪 Tests
+Bash
 
----
-
-## 🧪 Tests
-
-```bash
 # Tests unitaires
 npm test
 
@@ -608,20 +569,15 @@ node test_features.js
 
 # Tests de connexion (nécessite un serveur configuré)
 npm run test:integration
-```
+🐛 Débogage
+Activer les logs verbeux
+Bash
 
----
-
-## 🐛 Débogage
-
-### Activer les logs verbeux
-```bash
 # Dans .env
-LOG_LEVEL=debug
-```
+MCP_DEBUG=true
+Consulter les logs système
+JavaScript
 
-### Consulter les logs système
-```json
 {
   "tool": "task_logs",
   "arguments": {
@@ -630,72 +586,50 @@ LOG_LEVEL=debug
     "limit": 100
   }
 }
-```
+Diagnostic complet
+JavaScript
 
-### Diagnostic complet
-```json
 {
   "tool": "system_diagnostics",
   "arguments": {
     "verbose": true
   }
 }
-```
-
----
-
-## 🚀 Performance
-
-### Optimisations
-- **Pool de connexions**: Réutilisation des connexions SSH.
-- **Queue persistante**: Sauvegarde incrémentale toutes les 5s.
-- **Cleanup automatique**: Nettoyage des vieilles tâches toutes les heures.
-- **Keep-alive**: Maintien des connexions actives.
-
-### Métriques typiques
-| Opération             | Temps moyen             |
-|-----------------------|-------------------------|
-| Commande simple       | 200-500ms               |
-| Upload 10MB           | 2-5s                    |
-| Download 50MB         | 5-15s                   |
-| Pool get connection   | < 50ms (si disponible)  |
-
----
-
-## 📈 Roadmap
-- **v6.0**: Pool de connexions SSH
-- **v7.0**: Gestion des prompts interactifs
-- **v8.0**: Streaming de logs, amélioration et correction bug path
-- **v9.0**: Interface Web de monitoring
-- **v10.0**: Support multi-utilisateurs
-- **v11.0**: Chiffrement E2E des données sensibles
-
----
-
-## 🤝 Contribution
+🚀 Performance
+Optimisations
+Pool de connexions: Réutilisation des connexions SSH
+Queue persistante: Sauvegarde incrémentale toutes les 5s
+Cleanup automatique: Nettoyage des vieilles tâches toutes les heures
+Keep-alive: Maintien des connexions actives
+Métriques typiques
+Opération	Temps moyen
+Commande simple	200-500ms
+Upload 10MB	2-5s
+Download 50MB	5-15s
+Pool get connection	< 50ms (si disponible)
+📈 Roadmap
+ v6.0: Pool de connexions SSH
+ v7.0: Gestion des prompts interactifs
+ v8.0: Streaming de logs amélioration et correction bug path
+ v9.0: Interface Web de monitoring
+ v10.0: Support multi-utilisateurs
+ v11.0: Chiffrement E2E des données sensibles
+🤝 Contribution
 Les contributions sont les bienvenues !
 
-1.  Fork le projet
-2.  Créez une branche (`git checkout -b feature/amazing`)
-3.  Committez (`git commit -m 'Add amazing feature'`)
-4.  Push (`git push origin feature/amazing`)
-5.  Ouvrez une Pull Request
-
----
-
-## 📝 Licence
+Fork le projet
+Créez une branche (git checkout -b feature/amazing)
+Committez (git commit -m `Add amazing feature`)
+Push (git push origin feature/amazing)
+Ouvrez une Pull Request
+📝 Licence
 MIT © [Votre Nom]
 
----
-
-## 💬 Support
-- 📧 **Email**: geminiEA@mail.com
-- 🐛 **Issues**: GitHub Issues
-- 📖 **Docs**: Documentation complète
-
----
-
-## 🙏 Remerciements
-- Model Context Protocol
-- ssh2
-- ssh2-sftp-client
+💬 Support
+📧 Email: support@example.com
+🐛 Issues: GitHub Issues
+📖 Docs: Documentation complète
+🙏 Remerciements
+Model Context Protocol
+ssh2
+ssh2-sftp-client

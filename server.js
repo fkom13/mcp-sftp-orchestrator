@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 console.error("✅ McpServer importé");
+const DEBUG = process.env.MCP_DEBUG === 'true';
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 console.error("✅ StdioServerTransport importé");
@@ -26,14 +27,17 @@ import config from './config.js';
 console.error("✅ config importé");
 
 import apis from './apis.js';
-console.error("✅ apis importé");
-
-console.error("=== TOUS LES IMPORTS RÉUSSIS ===");
+if (DEBUG) {
+    console.error("✅ apis importé");
+    console.error("=== TOUS LES IMPORTS RÉUSSIS ===");
+}
 
 // ✅ INITIALISER EXPLICITEMENT ET ATTENDRE
-console.error("⏳ Initialisation de la queue...");
+const DEBUG = process.env.MCP_DEBUG === 'true';
+
+if (DEBUG) console.error("⏳ Initialisation de la queue...");
 await queue.init();
-console.error("✅ Queue initialisée");
+if (DEBUG) console.error("✅ Queue initialisée");
 
 const server = new McpServer({
     name: "orchestrator",
@@ -42,6 +46,33 @@ const server = new McpServer({
 });
 
 console.error("✅ Serveur MCP créé");
+
+// Ajout de l'outil system_diagnostics avant les autres
+server.registerTool(
+    "system_diagnostics",
+    {
+        title: "Diagnostic système complet",
+        description: "Exécute un diagnostic complet du système MCP.",
+        inputSchema: z.object({
+            verbose: z.boolean().optional().default(false)
+        })
+    },
+    async (params) => {
+        const stats = {
+            queue: queue.getStats(),
+            pool: ssh.getPoolStats(),
+            servers: await servers.listServers(),
+            apis: await apis.listApis(),
+            crashed: queue.getCrashedJobs().length
+        };
+
+        if (params.verbose) {
+            stats.logs = queue.getLogs({ limit: 20 });
+        }
+
+        return { content: [{ type: "text", text: JSON.stringify(stats, null, 2) }] };
+    }
+);
 
 
 // --- OUTILS DE GESTION DES SERVEURS ---
@@ -194,7 +225,7 @@ server.registerTool(
             const endpoint = apiConfig.health_check_endpoint || '';
             const url = `${apiConfig.url}${endpoint}`;
             const method = apiConfig.health_check_method || 'GET';
-            
+
             let curlCmd = `curl -X ${method} -o /dev/null -s -w '%{http_code}:%{time_total}'`;
 
             // Gérer l'authentification htpasswd
@@ -207,7 +238,7 @@ server.registerTool(
                 const scheme = apiConfig.auth_scheme ? `${apiConfig.auth_scheme} ` : '';
                 curlCmd += ` -H '${apiConfig.auth_header_name || 'Authorization'}: ${scheme}${apiConfig.api_key}'`;
             }
-            
+
             curlCmd += ` ${url}`;
 
             const job = queue.addJob({ type: 'ssh', alias: params.server_alias, cmd: curlCmd });
@@ -378,11 +409,17 @@ server.registerTool(
 
 
 // --- LOGIQUE D'ATTENTE HYBRIDE ---
+// --- LOGIQUE D'ATTENTE HYBRIDE ---
 async function waitForJobCompletion(jobId, timeout) {
     return new Promise((resolve) => {
         const startTime = Date.now();
         const interval = setInterval(() => {
             const job = queue.getJob(jobId);
+            if (!job) {
+                clearInterval(interval);
+                resolve(null);
+                return;
+            }
             if (job.status === 'completed' || job.status === 'failed') {
                 clearInterval(interval);
                 resolve(job);
@@ -399,14 +436,14 @@ server.registerTool(
     "task_transfer",
     {
         title: "Transférer un fichier ou dossier (SFTP)",
-                    description: `Lance un transfert SFTP. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan.`, 
-                    inputSchema: z.object({
-                        alias: z.string().describe("Alias du serveur cible."),
-                    direction: z.enum(['upload', 'download']),
-                    local: z.string().describe("Chemin absolu local."),
-                    remote: z.string().describe("Chemin absolu distant."),
-                    rappel: z.number().optional().describe("Définit un rappel en secondes.")
-                    })
+        description: `Lance un transfert SFTP. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan.`,
+        inputSchema: z.object({
+            alias: z.string().describe("Alias du serveur cible."),
+            direction: z.enum(['upload', 'download']),
+            local: z.string().describe("Chemin absolu local."),
+            remote: z.string().describe("Chemin absolu distant."),
+            rappel: z.number().optional().describe("Définit un rappel en secondes.")
+        })
     },
     async (params) => {
         const job = queue.addJob({ type: 'sftp', ...params, status: 'pending' });
@@ -415,8 +452,12 @@ server.registerTool(
 
         const finalJob = await waitForJobCompletion(job.id, config.syncTimeout);
         if (finalJob) {
-            return { content: [{ type: "text", text: `Résultat direct (tâche ${finalJob.id}):
-${JSON.stringify(finalJob, null, 2)}` }] };
+            return {
+                content: [{
+                    type: "text", text: `Résultat direct (tâche ${finalJob.id}):
+${JSON.stringify(finalJob, null, 2)}`
+                }]
+            };
         } else {
             return { content: [{ type: "text", text: `Tâche de transfert ${job.id} initiée en arrière-plan.` }] };
         }
@@ -427,12 +468,12 @@ server.registerTool(
     "task_exec",
     {
         title: "Exécuter une commande à distance (SSH)",
-                    description: `Exécute une commande SSH. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan.`, 
-                    inputSchema: z.object({
-                        alias: z.string().describe("Alias du serveur cible."),
-                    cmd: z.string().describe("La commande complète à exécuter."),
-                    rappel: z.number().optional().describe("Définit un rappel en secondes.")
-                    })
+        description: `Exécute une commande SSH. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan.`,
+        inputSchema: z.object({
+            alias: z.string().describe("Alias du serveur cible."),
+            cmd: z.string().describe("La commande complète à exécuter."),
+            rappel: z.number().optional().describe("Définit un rappel en secondes.")
+        })
     },
     async (params) => {
         const job = queue.addJob({ type: 'ssh', ...params, status: 'pending' });
@@ -441,8 +482,12 @@ server.registerTool(
 
         const finalJob = await waitForJobCompletion(job.id, config.syncTimeout);
         if (finalJob) {
-            return { content: [{ type: "text", text: `Résultat direct (tâche ${finalJob.id}):
-${finalJob.output || JSON.stringify(finalJob, null, 2)}` }] };
+            return {
+                content: [{
+                    type: "text", text: `Résultat direct (tâche ${finalJob.id}):
+${finalJob.output || JSON.stringify(finalJob, null, 2)}`
+                }]
+            };
         } else {
             return { content: [{ type: "text", text: `Tâche d'exécution ${job.id} initiée en arrière-plan.` }] };
         }
@@ -524,9 +569,9 @@ server.registerTool(
         })
     },
     async (params) => {
-        const job = queue.addJob({ 
-            type: 'sftp', 
-            ...params, 
+        const job = queue.addJob({
+            type: 'sftp',
+            ...params,
             status: 'pending',
             files: params.files
         });
@@ -558,9 +603,9 @@ server.registerTool(
         })
     },
     async (params) => {
-        const job = queue.addJob({ 
-            type: 'ssh', 
-            ...params, 
+        const job = queue.addJob({
+            type: 'ssh',
+            ...params,
             status: 'pending',
             interactive: params.interactive,
             autoRespond: params.autoRespond
@@ -597,9 +642,9 @@ server.registerTool(
         })
     },
     async (params) => {
-        const job = queue.addJob({ 
-            type: 'ssh_sequence', 
-            ...params, 
+        const job = queue.addJob({
+            type: 'ssh_sequence',
+            ...params,
             status: 'pending'
         });
         history.logTask(job);
@@ -658,7 +703,7 @@ server.registerTool(
     async (params) => {
         try {
             const newJob = await queue.retryJob(params.id);
-            
+
             // Relancer selon le type
             if (newJob.type === 'sftp') {
                 sftp.executeTransfer(newJob.id);
@@ -667,7 +712,7 @@ server.registerTool(
             } else if (newJob.type === 'ssh_sequence') {
                 ssh.executeCommandSequence(newJob.id);
             }
-            
+
             return { content: [{ type: "text", text: `Tâche ${params.id} relancée avec le nouvel ID: ${newJob.id}` }] };
         } catch (e) {
             const errorPayload = {

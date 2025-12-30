@@ -18,6 +18,10 @@ async function ensureLocalDir(filePath) {
     }
 }
 
+function hasGlobPattern(str) {
+    return /[*?[\]]/.test(str);
+}
+
 // Fonction pour créer un dossier distant si nécessaire
 async function ensureRemoteDir(sftp, filePath) {
     const dir = path.posix.dirname(filePath); // Utiliser posix pour les chemins distants
@@ -193,7 +197,7 @@ async function handleUpload(sftp, localPath, remotePath) {
 // Gestion spécifique du download
 async function handleDownload(sftp, remotePath, localPath) {
     // Si le chemin distant contient un glob
-    if (micromatch.isMatch(remotePath, '**/*')) {
+    if (hasGlobPattern(remotePath)) {
         const parentDir = path.dirname(remotePath);
         const pattern = path.basename(remotePath);
 
@@ -213,8 +217,8 @@ async function handleDownload(sftp, remotePath, localPath) {
                 const remoteFile = path.join(parentDir, fileName);
                 const localFile = path.join(localPath, fileName);
                 queue.log('info', `Téléchargement (glob): ${remoteFile} -> ${localFile}`);
-                const destinationStream = createWriteStream(localFile);
-                await sftp.get(remoteFile, destinationStream);
+                // Use path directly instead of stream for better compatibility
+                await sftp.get(remoteFile, localFile);
             }
             return matchingFiles.length;
         } catch (err) {
@@ -241,8 +245,8 @@ const stats = await sftp.stat(remotePath);
             const finalLocalPath = path.join(localPath, path.basename(remotePath));
             const localDir = path.dirname(finalLocalPath);
             await fs.mkdir(localDir, { recursive: true });
-            const destinationStream = createWriteStream(finalLocalPath);
-            await sftp.get(remotePath, destinationStream);
+            // Use path directly instead of stream for better compatibility
+            await sftp.get(remotePath, finalLocalPath);
         }
         return 1;
     }

@@ -14,7 +14,14 @@ async function readHistory() {
 }
 
 async function writeHistory(history) {
-    await fs.writeFile(HISTORY_FILE_PATH, JSON.stringify(history, null, 2));
+    try {
+        await fs.writeFile(HISTORY_FILE_PATH, JSON.stringify(history, null, 2));
+    } catch (error) {
+        // Silently fail or log if possible, but don't crash
+        if (process.env.MCP_DEBUG === 'true') {
+            console.error(`[ERROR] Failed to write history: ${error.message}`);
+        }
+    }
 }
 
 async function logTask(jobDetails) {

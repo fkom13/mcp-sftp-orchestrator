@@ -1,6 +1,5 @@
 import SftpClient from 'ssh2-sftp-client';
 import fs from 'fs/promises';
-import { createWriteStream } from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import queue from './queue.js';
@@ -116,27 +115,27 @@ async function executeTransfer(jobId) {
         // Déterminer si on traite plusieurs fichiers
         const files = job.files || [{ local: job.local, remote: job.remote }];
         const isMultiple = Array.isArray(job.files) && job.files.length > 1;
-        
+        const force = job.force === true;
+
         let successCount = 0;
         let failedFiles = [];
         let totalFiles = 0;
-        
-        // Traiter chaque fichier
+
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const progress = isMultiple ? ` (${i + 1}/${files.length})` : '';
-            
+
             try {
                 if (job.direction === 'upload') {
                     const localFiles = await expandFileList(file.local);
                     totalFiles += localFiles.length;
                     for (const localFile of localFiles) {
                         queue.log('info', `Transfert${progress}: ${localFile}`);
-                        await handleUpload(sftp, localFile, file.remote);
+                        await handleUpload(sftp, localFile, file.remote, force);
                         successCount++;
                     }
                 } else if (job.direction === 'download') {
-                    const downloadedCount = await handleDownload(sftp, file.remote, file.local);
+                    const downloadedCount = await handleDownload(sftp, file.remote, file.local, force);
                     totalFiles += downloadedCount;
                     successCount += downloadedCount;
                 }
@@ -173,30 +172,62 @@ async function executeTransfer(jobId) {
 }
 
 // Gestion spécifique de l'upload
-async function handleUpload(sftp, localPath, remotePath) {
+async function handleUpload(sftp, localPath, remotePath, force = false) {
+    let localStats;
     try {
-        const stats = await fs.stat(localPath);
-        
-        if (stats.isDirectory()) {
-            // Upload d'un dossier entier
-            await sftp.uploadDir(localPath, remotePath);
-        } else {
-            // Upload d'un fichier - créer le dossier parent si nécessaire
-            await ensureRemoteDir(sftp, remotePath);
-            await sftp.put(localPath, remotePath);
-        }
+        localStats = await fs.stat(localPath);
     } catch (err) {
-        // Si le fichier local n'existe pas
         if (err.code === 'ENOENT') {
             throw new Error(`Fichier local introuvable: ${localPath}`);
         }
         throw err;
     }
+
+    if (localStats.isDirectory()) {
+        const remoteExists = await sftp.exists(remotePath).catch(() => false);
+        if (remoteExists) {
+            try {
+                const remoteStats = await sftp.stat(remotePath);
+                if (!remoteStats.isDirectory) {
+                    throw new Error(`Impossible d'envoyer un dossier local vers un fichier distant existant: ${remotePath}. Spécifiez un dossier de destination.`);
+                }
+            } catch (e) {
+                if (e.message && e.message.includes('Impossible d')) throw e;
+            }
+        }
+        await sftp.uploadDir(localPath, remotePath);
+        return;
+    }
+
+    let finalRemotePath;
+    const remoteExists = await sftp.exists(remotePath).catch(() => false);
+
+    if (remoteExists) {
+        let remoteStats;
+        try {
+            remoteStats = await sftp.stat(remotePath);
+        } catch (e) {
+            remoteStats = null;
+        }
+
+        if (remoteStats && remoteStats.isDirectory) {
+            finalRemotePath = path.posix.join(remotePath, path.basename(localPath));
+        } else {
+            if (!force) {
+                throw new Error(`Le fichier distant ${remotePath} existe déjà. Utilisez force:true pour l'écraser.`);
+            }
+            finalRemotePath = remotePath;
+        }
+    } else {
+        finalRemotePath = remotePath;
+    }
+
+    await ensureRemoteDir(sftp, finalRemotePath);
+    await sftp.put(localPath, finalRemotePath);
 }
 
 // Gestion spécifique du download
-async function handleDownload(sftp, remotePath, localPath) {
-    // Si le chemin distant contient un glob
+async function handleDownload(sftp, remotePath, localPath, force = false) {
     if (hasGlobPattern(remotePath)) {
         const parentDir = path.dirname(remotePath);
         const pattern = path.basename(remotePath);
@@ -209,15 +240,18 @@ async function handleDownload(sftp, remotePath, localPath) {
                 throw new Error(`Aucun fichier distant ne correspond au pattern: ${remotePath}`);
             }
 
-            // S'assurer que le dossier local existe
             await fs.mkdir(localPath, { recursive: true });
 
-            // Télécharger chaque fichier correspondant
             for (const fileName of matchingFiles) {
                 const remoteFile = path.join(parentDir, fileName);
                 const localFile = path.join(localPath, fileName);
+
+                const localFileExists = await fs.access(localFile).then(() => true).catch(() => false);
+                if (localFileExists && !force) {
+                    throw new Error(`Le fichier local ${localFile} existe déjà. Utilisez force:true pour l'écraser.`);
+                }
+
                 queue.log('info', `Téléchargement (glob): ${remoteFile} -> ${localFile}`);
-                // Use path directly instead of stream for better compatibility
                 await sftp.get(remoteFile, localFile);
             }
             return matchingFiles.length;
@@ -229,25 +263,51 @@ async function handleDownload(sftp, remotePath, localPath) {
         }
 
     } else {
-        // Comportement pour un fichier ou un dossier unique
-        const exists = await sftp.exists(remotePath);
-        if (!exists) {
+        const remoteExists = await sftp.exists(remotePath);
+        if (!remoteExists) {
             throw new Error(`Fichier distant introuvable: ${remotePath}`);
         }
 
-const stats = await sftp.stat(remotePath);
-        
-        if (stats.isDirectory) {
+        const remoteStats = await sftp.stat(remotePath);
+
+        if (remoteStats.isDirectory) {
             await fs.mkdir(localPath, { recursive: true });
             await sftp.downloadDir(remotePath, localPath);
-        } else {
-            // Correction : localPath est le dossier, on ajoute le nom du fichier distant
-            const finalLocalPath = path.join(localPath, path.basename(remotePath));
-            const localDir = path.dirname(finalLocalPath);
-            await fs.mkdir(localDir, { recursive: true });
-            // Use path directly instead of stream for better compatibility
-            await sftp.get(remotePath, finalLocalPath);
+            return 1;
         }
+
+        let finalLocalPath;
+        const localExists = await fs.access(localPath).then(() => true).catch(() => false);
+
+        if (localExists) {
+            let localStats;
+            try {
+                localStats = await fs.stat(localPath);
+            } catch (e) {
+                localStats = null;
+            }
+
+            if (localStats && localStats.isDirectory()) {
+                finalLocalPath = path.join(localPath, path.basename(remotePath));
+            } else {
+                if (!force) {
+                    throw new Error(`Le fichier local ${localPath} existe déjà. Utilisez force:true pour l'écraser.`);
+                }
+                finalLocalPath = localPath;
+            }
+        } else {
+            const hasExt = path.extname(localPath) !== '';
+            if (hasExt) {
+                finalLocalPath = localPath;
+            } else {
+                await fs.mkdir(localPath, { recursive: true });
+                finalLocalPath = path.join(localPath, path.basename(remotePath));
+            }
+        }
+
+        const localDir = path.dirname(finalLocalPath);
+        await fs.mkdir(localDir, { recursive: true });
+        await sftp.get(remotePath, finalLocalPath);
         return 1;
     }
 }

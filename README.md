@@ -1,635 +1,224 @@
-# 🚀 MCP Orchestrator - Serveur d`orchestration SSH/SFTP
+# 🚀 MCP Orchestrator — Serveur d'orchestration SSH/SFTP
 
-[![Version](https://img.shields.io/badge/version-8.0.0-blue.svg)](https://github.com/fkom13/mcp-sftp-orchestrator)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org)
+**Version** : 9.0.1  
+**License** : MIT  
+**Node** : >= 18.0.0
 
-Un serveur MCP (Model-Context-Protocol) puissant pour l'orchestration de tâches distantes. Il gère des connexions SSH et SFTP, une file d'attente de tâches persistante, et expose un ensemble riche d'outils pour la gestion de serveurs, le monitoring, et l'exécution de commandes via une interface stdio compatible avec les LLM.
-
-## ✨ Fonctionnalités Principales
-
-### 🔐 Gestion de Serveurs
-- ✅ Configuration multi-serveurs avec alias
-- ✅ Support authentification par clé SSH ou mot de passe
-- ✅ Stockage sécurisé des configurations
-
-### 📡 Exécution SSH
-- ✅ Commandes simples et séquences
-- ✅ Mode interactif avec auto-réponse aux prompts
-- ✅ Streaming pour logs (PM2, Docker, tail, journalctl)
-- ✅ Pool de connexions persistantes
-- ✅ Retry automatique en cas d`échec
-
-### 📁 Transferts SFTP
-- ✅ Upload/Download de fichiers et dossiers
-- ✅ Support patterns glob (`*.txt`, `**/*.js`)
-- ✅ Transferts multiples en une seule commande
-- ✅ Création automatique des dossiers parents
-
-### 📊 Monitoring & APIs
-- ✅ Monitoring système (CPU, RAM, Disque)
-- ✅ Statut des services (systemd, Docker, PM2)
-- ✅ Health checks HTTP/HTTPS avec authentification
-- ✅ Catalogue d`APIs personnalisable
-- ✅ Fail2Ban status
-
-### 🎯 Gestion de Tâches
-- ✅ Queue persistante avec sauvegarde automatique
-- ✅ Exécution hybride (sync/async)
-- ✅ Historique des commandes
-- ✅ Retry manuel et automatique
-- ✅ Statistiques détaillées
+Un serveur MCP (Model Context Protocol) qui donne à un agent IA la capacité d'exécuter des commandes SSH, des transferts SFTP, et du monitoring sur des serveurs distants. File d'attente persistante, pool de connexions SSH, exécution hybride synchrone/asynchrone.
 
 ---
 
 ## 📦 Installation
 
-Vous avez deux méthodes pour utiliser cet outil :
+```bash
+git clone https://github.com/fkom13/mcp-sftp-orchestrator.git
+cd sftp-mcp
+npm install
+cp .env.example .env
+# Éditer .env avec vos chemins
+```
 
-### Méthode 1 : Via NPM (Recommandé)
+Prérequis : Node.js >= 18.0.0
 
-C'est la méthode la plus simple. L'outil sera téléchargé et exécuté à la demande par `npx`.
+---
 
-Enregistrez ce MCP auprès de votre client (ex: `gemini-cli`) avec la configuration suivante :
+## ⚙️ Configuration (.env)
+
+Toutes les variables sont optionnelles. Les valeurs par défaut sont conçues pour un usage standard.
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `MCP_DATA_DIR` | `~/.config/mcp-orchestrator` | Dossier où sont stockés `servers.json`, `apis.json`, `queue.json`, `history.json` |
+| `MCP_SYNC_TIMEOUT_S` | `120` | Délai en secondes avant qu'une tâche passe en arrière-plan (retour immédiat au client, tâche continue) |
+| `MCP_DEFAULT_CMD_TIMEOUT_S` | `600` | Timeout SSH par défaut en secondes. `0` = aucune limite |
+| `MCP_INTERACTIVE_CMD_TIMEOUT_S` | `300` | Timeout pour les commandes interactives. `0` = aucune limite |
+| `MCP_MAX_WAIT_TIMEOUT_S` | `600` | Timeout maximum pour l'outil `task_wait` |
+| `MAX_CONNECTIONS_PER_SERVER` | `5` | Nombre max de connexions SSH simultanées par serveur |
+| `MIN_CONNECTIONS_PER_SERVER` | `1` | Nombre min de connexions SSH maintenues par serveur |
+| `IDLE_TIMEOUT` | `300000` | Délai en ms avant fermeture d'une connexion SSH inactive (5 min) |
+| `KEEP_ALIVE_INTERVAL` | `30000` | Intervalle keepalive SSH en ms (30s) |
+| `MAX_QUEUE_SIZE` | `1000` | Nombre maximum de jobs dans la file d'attente |
+| `SAVE_INTERVAL` | `5000` | Intervalle de sauvegarde de la queue sur disque en ms (5s) |
+| `MCP_DEBUG` | `false` | `true` pour activer les logs détaillés dans stderr |
+
+---
+
+## 🔌 Connexion au client MCP (OpenCode, Claude Desktop, etc.)
 
 ```json
 {
   "mcpServers": {
     "orchestrator": {
-      "command": "npx",
-      "args": [
-        "@fkom13/mcp-sftp-orchestrator"
-      ],
+      "command": "node",
+      "args": ["/chemin/vers/sftp-mcp/server.js"],
       "env": {
-        "MCP_DATA_DIR": "/chemin/absolu/vers/votre/dossier/de/donnees"
+        "MCP_DATA_DIR": "/chemin/vers/sftp-mcp/data"
       }
     }
   }
 }
 ```
-**Important** : Remplacez `/chemin/absolu/vers/votre/dossier/de/donnees` par un chemin réel sur votre machine, par exemple `~/.config/mcp-orchestrator`.
-
-### Méthode 2 : Depuis les Sources (Git)
-
-Cette méthode est utile si vous souhaitez modifier le code.
-
-1.  **Clonez le dépôt :**
-    ```bash
-    git clone https://github.com/fkom13/mcp-sftp-orchestrator.git
-    cd mcp-sftp-orchestrator
-    ```
-
-2.  **Installez les dépendances :**
-    ```bash
-    npm install
-    ```
-
-3.  **Configurez votre client MCP** pour lancer le script localement :
-    ```json
-    {
-      "mcpServers": {
-        "orchestrator": {
-          "command": "node",
-          "args": [
-            "/chemin/vers/mcp-sftp-orchestrator/server.js"
-          ],
-          "env": {
-            "MCP_DATA_DIR": "/chemin/vers/mcp-sftp-orchestrator/data"
-          }
-        }
-      }
-    }
-    ```
 
 ---
 
-## 🛠️ Configuration
+## 🧰 Référence des Outils (29 outils)
 
-La configuration du serveur se fait par ordre de priorité :
-
-1.  **Variables d'environnement du client MCP** (le bloc `env` dans votre JSON) : **Priorité la plus haute**. C'est la méthode recommandée pour définir le dossier de données.
-2.  **Fichier `.env`** : Si vous lancez le projet localement (méthode 2), vous pouvez créer un fichier `.env` à la racine. Il sera utilisé si la variable n'est pas définie par le client MCP.
-3.  **Valeurs par défaut** : Si rien n'est défini, le dossier de données par défaut sera `~/.config/mcp-orchestrator`.
-
-**Variables disponibles :**
-
-- `MCP_DATA_DIR`: (Recommandé) Le dossier où seront stockées les données (configurations des serveurs, historique, etc.).
-- `MCP_SYNC_TIMEOUT_S`: Le délai en secondes avant qu'une tâche longue ne passe en arrière-plan. Par défaut : `30`.
-
----
-
-## 🧰 Référence des Outils (API)
-
-Voici la liste complète des outils exposés par ce serveur MCP.
+### Diagnostic & Aide
+| Outil | Description |
+|-------|-------------|
+| `help` | Guide complet : liste des outils, variables .env, astuces d'utilisation |
+| `system_diagnostics` | Diagnostic complet (queue, pool, serveurs, APIs). `verbose:true` pour les logs |
 
 ### Gestion des Serveurs
+| Outil | Description |
+|-------|-------------|
+| `server_add` | Ajouter/modifier un alias de serveur (host, user, keyPath ou password) |
+| `server_list` | Lister tous les serveurs configurés avec leurs détails |
+| `server_remove` | Supprimer un alias de serveur |
 
-- `server_add`: Enregistre ou met à jour les informations de connexion d'un serveur.
-- `server_list`: Affiche la liste de tous les alias de serveurs configurés.
-- `server_remove`: Supprime un alias de serveur de la configuration.
+### Gestion du Catalogue API
+| Outil | Description |
+|-------|-------------|
+| `api_add` | Ajouter une API au catalogue de monitoring |
+| `api_list` | Lister toutes les APIs configurées |
+| `api_remove` | Supprimer une API du catalogue |
+| `api_check` | Test de santé d'une API via son alias (utilise SSH + curl) |
 
 ### Exécution de Tâches
+| Outil | Description |
+|-------|-------------|
+| `task_exec` | Exécuter une commande SSH. Paramètre `timeout` en secondes (`0` = infini) |
+| `task_exec_interactive` | SSH avec gestion des prompts (yes/no, menus, passwords). Supporte `responses` avec regex |
+| `task_exec_sequence` | Séquence de plusieurs commandes SSH sur le même serveur |
+| `task_transfer` | Transfert SFTP fichier ou dossier. `force:true` pour écraser sans confirmation |
+| `task_transfer_multi` | Transferts SFTP multiples avec support de patterns glob (`*`, `?`, `[]`) |
 
-- `task_exec`: Exécute une commande SSH (hybride synchrone/asynchrone).
-- `task_transfer`: Transfère un fichier ou dossier via SFTP (hybride synchrone/asynchrone).
-- `task_exec_interactive`: Exécute une commande SSH interactive (gère les prompts `yes/no`, etc.).
-- `task_exec_sequence`: Exécute plusieurs commandes SSH en séquence sur le même serveur.
-- `task_transfer_multi`: Transfère plusieurs fichiers/dossiers avec support de patterns `glob`.
+### Monitoring
+| Outil | Description |
+|-------|-------------|
+| `get_system_resources` | CPU, RAM, Disque d'un serveur |
+| `get_services_status` | Statut des services systemd, Docker, PM2 |
+| `get_fail2ban_status` | Statut Fail2Ban (toutes les jails ou une spécifique) |
+| `check_api_health` | Test HTTP direct sur une URL (via SSH + curl) |
 
-### Monitoring & Diagnostics
+### Logs
+| Outil | Description |
+|-------|-------------|
+| `get_pm2_logs` | Logs PM2 d'une application spécifique ou toutes |
+| `get_docker_logs` | Logs d'un container Docker |
+| `tail_file` | Dernières lignes d'un fichier distant (équivalent `tail -n`) |
 
-| Outil                   | Description                                     |
-| :---------------------- | :---------------------------------------------- |
-| `get_system_resources`  | Récupère les métriques système vitales (CPU, RAM, Disque). |
-| `get_services_status`   | Récupère le statut des services (systemd, Docker, PM2). |
-| `get_fail2ban_status`   | Récupère les informations du service Fail2Ban.  |
-| `check_api_health`      | Test HTTP direct sur une URL (sans catalogue).  |
-
-### Récupération de Logs
-
-- `get_pm2_logs`: Raccourci pour récupérer les logs PM2.
-- `get_docker_logs`: Raccourci pour récupérer les logs d'un container Docker.
-- `tail_file`: Affiche les dernières lignes d'un fichier distant.
-
-### Gestion de la File d'Attente (Queue)
-
-- `task_queue`: Affiche le statut de toutes les tâches dans la file d'attente.
-- `task_status`: Récupère les détails d'une tâche par son ID.
-- `task_history`: Affiche l'historique des dernières tâches lancées.
-- `task_retry`: Relance une tâche qui a échoué ou crashé.
-- `queue_stats`: Affiche les statistiques de la queue de tâches.
-
-### Gestion des APIs (Monitoring Externe)
-
-- `api_add`: Ajoute une API au catalogue de monitoring.
-- `api_list`: Affiche toutes les APIs configurées.
-- `api_remove`: Supprime une API du catalogue.
-- `api_check`: Lance un test de santé sur une API.
-
-### Administration du Serveur MCP
-
-- `task_logs`: Affiche les logs du système MCP lui-même.
-- `pool_stats`: Affiche les statistiques du pool de connexions SSH.
+### File d'Attente & Suivi
+| Outil | Description |
+|-------|-------------|
+| `task_queue` | Voir toutes les tâches (en cours, en attente, terminées) |
+| `task_status` | Détail complet d'une tâche par son ID |
+| `task_history` | Historique des tâches exécutées, filtrable par alias |
+| `task_retry` | Relancer une tâche échouée ou crashée |
+| `task_wait` | Attendre la fin d'une tâche passée en arrière-plan (jusqu'à 600s) |
+| `task_logs` | Logs internes du système MCP |
+| `queue_stats` | Statistiques de la file d'attente |
+| `pool_stats` | Statistiques du pool de connexions SSH |
 
 ---
 
-### Prérequis
-- Node.js >= 18.0.0
-- npm ou yarn
-- Accès SSH aux serveurs cibles
+## 📖 Guide d'Utilisation
 
-### Installation rapide
+### Commandes longues (docker build, grosses installs)
+
+```
+1. Lancer avec timeout:0 → task_exec { alias: "vps", cmd: "docker build ...", timeout: 0 }
+2. Si ça dépasse 120s → passe en arrière-plan avec un ID
+3. Récupérer le résultat → task_wait { id: "abc123" }
+```
+
+### Transferts SFTP (façon FileZilla)
+
+- **Fichier nouveau** : upload/download sans rien de spécial
+- **Fichier existe déjà** : refusé avec message "Utilisez force:true pour écraser"
+- **Avec `force: true`** : écrase sans rien demander
+- **Dossier → dossier** : transfert récursif automatique
+- **Patterns glob** : `task_transfer_multi` avec `*.txt`, `data?.json`, etc.
+
+### Mode interactif
+
+```json
+{
+  "alias": "vps",
+  "cmd": "apt upgrade",
+  "interactive": true,
+  "autoRespond": true,
+  "responses": {
+    "Do you want to continue": "y",
+    "restart services": "yes"
+  }
+}
+```
+
+Les clés de `responses` supportent les expressions régulières. Ex: `"[YyNn]\\\\?"` → `"y"`.
+
+---
+
+## 🏗️ Architecture
+
+```
+Client MCP (stdio ou HTTP)
+    │
+server.js ─── 29 outils MCP enregistrés
+    │
+    ├── queue.js ─── File d'attente persistante (JSON + backup auto)
+    ├── ssh.js ───── Exécution SSH (pool ou connexion dédiée interactive)
+    ├── sftp.js ──── Transferts SFTP (upload/download, glob, force)
+    ├── sshPool.js ─ Pool de connexions SSH persistantes (max 5/serveur)
+    ├── servers.js ─ CRUD alias de serveurs
+    ├── apis.js ──── CRUD catalogue d'APIs
+    ├── history.js ─ Historique des 500 dernières tâches
+    ├── config.js ── Configuration centralisée (CLI > .env > defaults)
+    └── utils.js ─── Utilitaires (escapeShellArg)
+```
+
+### Cycle de vie d'un job
+
+```
+pending → running → completed / failed
+                      ↓ (si redémarrage pendant running)
+                    crashed → retry → pending
+```
+
+---
+
+## 🔒 Sécurité
+
+- **`escapeShellArg()`** : toutes les URLs et chemins sont échappés avant d'être passés à curl/shell
+- **Détection de secrets en clair** : au démarrage, un warning est loggé si `servers.json` ou `apis.json` contiennent des mots de passe/clés API
+- **Recommandation** : utilisez des clés SSH (pas de mots de passe) et stockez les clés API dans Vaultwarden plutôt qu'en clair
+
+---
+
+## 🧪 Tests
 
 ```bash
+node diagnose.js        # Diagnostic complet
+node test_mcp.js        # Test smoke MCP
+node test_features.js   # Tests unitaires (queue, pool, glob, prompts, crash)
+```
 
-# Cloner le dépôt
-git clone https://github.com/fkom13/mcp-sftp-orchestrator.git
-cd mcp-sftp-orchestrator
+---
 
-# Installer les dépendances
-npm install
+## 🛣️ Roadmap
 
-# Copier et configurer l`environnement
-cp .env.example .env
-nano .env
+| Version | Changement |
+|---------|------------|
+| 8.2.0 | Ménage, uniformisation erreurs, nettoyage logs |
+| 8.3.0 | Transferts SFTP blindés (fichier vs dossier, force:true) |
+| 8.4.0 | Timeouts longues opérations, task_wait |
+| 8.5.0 | SSH interactif amélioré (menus, regex, password) |
+| 8.6.0 | Sécurité (escapeShellArg, détection secrets) |
+| 9.0.0 | Nettoyage, uniformisation finale, outil help, transport stdio uniquement |
+| 9.0.1 | Corrections sécurité (injection shell, vestiges code) |
 
-# Démarrer le serveur
-node server.js
+---
 
-⚙️ Configuration
-Variables d`environnement (.env)
-Bash
+## 📄 Licence
 
-# Répertoire de données (configs, historique, queue)
-MCP_DATA_DIR="/home/user/.config/mcp-orchestrator"
-
-# Délai avant passage en arrière-plan (secondes)
-MCP_SYNC_TIMEOUT_S=30
-
-# Timeouts d`exécution (millisecondes)
-MCP_DEFAULT_CMD_TIMEOUT_MS=300000      # 5 minutes
-MCP_INTERACTIVE_CMD_TIMEOUT_MS=120000  # 2 minutes
-
-# Pool de connexions SSH
-MAX_CONNECTIONS_PER_SERVER=5
-MIN_CONNECTIONS_PER_SERVER=1
-IDLE_TIMEOUT=300000           # 5 minutes
-KEEP_ALIVE_INTERVAL=30000     # 30 secondes
-
-# Queue
-MAX_QUEUE_SIZE=1000
-SAVE_INTERVAL=5000            # Sauvegarde toutes les 5s
-HISTORY_RETENTION=2678400000  # 31 jours
-
-# Debug log wraper erreor in stdio.error
-MCP_DEBUG=false
-
-Structure des données
-text
-
-~/.config/mcp-orchestrator/
-├── servers.json      # Configurations serveurs
-├── apis.json         # Catalogue d`APIs
-├── queue.json        # Queue de tâches
-├── queue.backup.json # Backup de sécurité
-└── history.json      # Historique
-
-🛠️ Guide d`Utilisation
-1. Configuration d`un serveur
-JavaScript
-
-// Avec clé SSH
-{
-  "tool": "server_add",
-  "arguments": {
-    "alias": "prod_vps",
-    "host": "192.168.1.100",
-    "user": "admin",
-    "keyPath": "/home/user/.ssh/id_rsa"
-  }
-}
-
-// Avec mot de passe
-{
-  "tool": "server_add",
-  "arguments": {
-    "alias": "staging",
-    "host": "staging.example.com",
-    "user": "deploy",
-    "password": "SecureP@ssw0rd"
-  }
-}
-2. Exécution de commandes
-Commande simple
-JavaScript
-
-{
-  "tool": "task_exec",
-  "arguments": {
-    "alias": "prod_vps",
-    "cmd": "uptime && df -h"
-  }
-}
-Commande interactive
-JavaScript
-
-{
-  "tool": "task_exec_interactive",
-  "arguments": {
-    "alias": "prod_vps",
-    "cmd": "sudo apt-get update && sudo apt-get upgrade",
-    "autoRespond": true,
-    "responses": {
-      "Do you want to continue": "Y",
-      "Restart services": "yes"
-    }
-  }
-}
-Séquence de commandes
-JavaScript
-
-{
-  "tool": "task_exec_sequence",
-  "arguments": {
-    "alias": "prod_vps",
-    "commands": [
-      "cd /var/www/app",
-      "git pull origin main",
-      "npm install",
-      "pm2 restart app"
-    ],
-    "continueOnError": false
-  }
-}
-3. Transferts SFTP
-Upload simple
-JavaScript
-
-{
-  "tool": "task_transfer",
-  "arguments": {
-    "alias": "prod_vps",
-    "direction": "upload",
-    "local": "/home/user/config.json",
-    "remote": "/etc/app/config.json"
-  }
-}
-Transferts multiples avec glob
-JavaScript
-
-{
-  "tool": "task_transfer_multi",
-  "arguments": {
-    "alias": "prod_vps",
-    "direction": "upload",
-    "files": [
-      {
-        "local": "/home/user/logs/*.log",
-        "remote": "/var/log/app/"
-      },
-      {
-        "local": "/home/user/configs/**/*.json",
-        "remote": "/etc/app/configs/"
-      }
-    ]
-  }
-}
-4. Monitoring
-Ressources système
-JavaScript
-
-{
-  "tool": "get_system_resources",
-  "arguments": {
-    "alias": "prod_vps"
-  }
-}
-// Retourne: CPU, RAM, Disque, Load Average
-Statut des services
-JavaScript
-
-{
-  "tool": "get_services_status",
-  "arguments": {
-    "alias": "prod_vps"
-  }
-}
-// Retourne: systemd, Docker, PM2
-Logs Docker
-JavaScript
-
-{
-  "tool": "get_docker_logs",
-  "arguments": {
-    "alias": "prod_vps",
-    "container": "nginx",
-    "lines": 100,
-    "since": "1h",
-    "timestamps": true
-  }
-}
-Logs PM2
-JavaScript
-
-{
-  "tool": "get_pm2_logs",
-  "arguments": {
-    "alias": "prod_vps",
-    "app": "api-server",
-    "lines": 200,
-    "errors": true
-  }
-}
-5. Catalogue d`APIs
-Ajouter une API
-JavaScript
-
-{
-  "tool": "api_add",
-  "arguments": {
-    "alias": "main_api",
-    "url": "https://api.example.com",
-    "health_check_endpoint": "/health",
-    "health_check_method": "GET",
-    "auth_method": "api_key",
-    "api_key": "your-api-key-here",
-    "auth_header_name": "X-API-Key",
-    "auth_scheme": ""
-  }
-}
-Vérifier une API
-JavaScript
-
-{
-  "tool": "api_check",
-  "arguments": {
-    "alias": "main_api",
-    "server_alias": "prod_vps"
-  }
-}
-// Retourne: status (UP/DOWN), http_code, response_time_ms
-6. Gestion de la Queue
-Voir toutes les tâches
-JavaScript
-
-{
-  "tool": "task_queue",
-  "arguments": {}
-}
-Statut d`une tâche
-JavaScript
-
-{
-  "tool": "task_status",
-  "arguments": {
-    "id": "a3f8c2d1"
-  }
-}
-Réessayer une tâche
-JavaScript
-
-{
-  "tool": "task_retry",
-  "arguments": {
-    "id": "a3f8c2d1"
-  }
-}
-Statistiques
-JavaScript
-
-{
-  "tool": "queue_stats",
-  "arguments": {}
-}
-// Retourne: total, byStatus, byType, avgDuration, successRate
-Diagnostic complet
-JavaScript
-
-{
-  "tool": "system_diagnostics",
-  "arguments": {
-    "verbose": true
-  }
-}
-🏗️ Architecture
-Composants Principaux
-text
-
-┌─────────────────────────────────────────────┐
-│           MCP Server (server.js)            │
-│  • Enregistrement des tools                 │
-│  • Validation des inputs (Zod)              │
-│  • Gestion des requêtes/réponses           │
-└─────────────┬───────────────────────────────┘
-              │
-    ┌─────────┴─────────┐
-    │                   │
-┌───▼────┐       ┌──────▼────────┐
-│ SSH    │       │ SFTP          │
-│ Module │       │ Module        │
-└───┬────┘       └──────┬────────┘
-    │                   │
-    └─────────┬─────────┘
-              │
-      ┌───────▼──────────┐
-      │  SSH Pool        │
-      │  • Connexions    │
-      │  • Keep-alive    │
-      │  • Auto-cleanup  │
-      └───────┬──────────┘
-              │
-      ┌───────▼──────────┐
-      │  Queue Manager   │
-      │  • Jobs          │
-      │  • History       │
-      │  • Persistence   │
-      └──────────────────┘
-Flux d`Exécution
-text
-
-Client → Tool Call → Validation → Job Creation
-                                       ↓
-                              Pool Get Connection
-                                       ↓
-                              Execute (SSH/SFTP)
-                                       ↓
-                         ┌─────────────┴──────────────┐
-                         │                            │
-                    Quick Job                    Long Job
-                    (< 30s)                      (> 30s)
-                         │                            │
-                    Sync Return               Async Background
-                         │                            │
-                    Update Queue              Update Queue
-                         │                            │
-                    Save History              Save History
-📊 Gestion des Erreurs
-Codes d`erreur
-Code	Description	Action recommandée
-CONNECTION_FAILED	Échec de connexion SSH	Vérifier host/port/réseau
-AUTH_FAILED	Authentification refusée	Vérifier user/key/password
-COMMAND_TIMEOUT	Commande timeout	Augmenter timeout ou vérifier commande
-TRANSFER_FAILED	Échec de transfert	Vérifier chemins et permissions
-QUEUE_FULL	Queue saturée	Nettoyer ou augmenter MAX_QUEUE_SIZE
-RETRY_LIMIT_EXCEEDED	Max tentatives atteint	Vérifier la cause et retry manuellement
-Exemple de réponse d`erreur
-JSON
-
-{
-  "error": true,
-  "code": "CONNECTION_FAILED",
-  "message": "Impossible de se connecter au serveur",
-  "details": {
-    "alias": "prod_vps",
-    "host": "192.168.1.100",
-    "reason": "ECONNREFUSED"
-  },
-  "timestamp": "2024-11-14T10:30:45.123Z"
-}
-🔒 Sécurité
-Bonnes pratiques
-Clés SSH
-
-Utilisez des clés plutôt que des mots de passe
-Protégez vos clés privées (chmod 600)
-Utilisez des passphrases
-Permissions
-
-Limitez l`accès au répertoire MCP_DATA_DIR
-Ne commitez jamais .env ou les fichiers de données
-Réseau
-
-Utilisez un VPN ou bastion pour l`accès SSH
-Configurez Fail2Ban sur les serveurs
-Limitez les IPs autorisées
-Mots de passe
-
-Stockez-les dans des variables d`environnement
-Utilisez des gestionnaires de secrets (Vault, etc.)
-Fichiers à exclure du versioning
-gitignore
-
-# .gitignore
-.env
-data/
-*.json
-!package.json
-node_modules/
-logs/
-*.log
-.DS_Store
-🧪 Tests
-Bash
-
-# Tests unitaires
-npm test
-
-# Tests de fonctionnalités
-node test_features.js
-
-# Tests de connexion (nécessite un serveur configuré)
-npm run test:integration
-🐛 Débogage
-Activer les logs verbeux
-Bash
-
-# Dans .env
-MCP_DEBUG=true
-Consulter les logs système
-JavaScript
-
-{
-  "tool": "task_logs",
-  "arguments": {
-    "level": "error",
-    "search": "timeout",
-    "limit": 100
-  }
-}
-Diagnostic complet
-JavaScript
-
-{
-  "tool": "system_diagnostics",
-  "arguments": {
-    "verbose": true
-  }
-}
-🚀 Performance
-Optimisations
-Pool de connexions: Réutilisation des connexions SSH
-Queue persistante: Sauvegarde incrémentale toutes les 5s
-Cleanup automatique: Nettoyage des vieilles tâches toutes les heures
-Keep-alive: Maintien des connexions actives
-Métriques typiques
-Opération	Temps moyen
-Commande simple	200-500ms
-Upload 10MB	2-5s
-Download 50MB	5-15s
-Pool get connection	< 50ms (si disponible)
-📈 Roadmap
- v6.0: Pool de connexions SSH
- v7.0: Gestion des prompts interactifs
- v8.0: Streaming de logs amélioration et correction bug path
- v9.0: Interface Web de monitoring
- v10.0: Support multi-utilisateurs
- v11.0: Chiffrement E2E des données sensibles
-🤝 Contribution
-Les contributions sont les bienvenues !
-
-Fork le projet
-Créez une branche (git checkout -b feature/amazing)
-Committez (git commit -m `Add amazing feature`)
-Push (git push origin feature/amazing)
-Ouvrez une Pull Request
-📝 Licence
-MIT © [Votre Nom]
-
-💬 Support
-📧 Email: support@example.com
-🐛 Issues: GitHub Issues
-📖 Docs: Documentation complète
-🙏 Remerciements
-Model Context Protocol
-ssh2
-ssh2-sftp-client
+MIT — Copyright (c) 2025-2026 Franck (fkom13)

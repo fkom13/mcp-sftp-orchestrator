@@ -24,9 +24,10 @@ const config = {
     dataDir: args['data-dir'] || process.env.MCP_DATA_DIR || path.join(os.homedir(), '.config', 'mcp-orchestrator'),
     
     // Timeouts en millisecondes (plus cohérent)
-    syncTimeout: parseInt(args['sync-timeout'] || process.env.MCP_SYNC_TIMEOUT_S || '30', 10) * 1000,
-    defaultCommandTimeout: parseInt(process.env.MCP_DEFAULT_CMD_TIMEOUT_MS || '300000', 10),
-    interactiveCommandTimeout: parseInt(process.env.MCP_INTERACTIVE_CMD_TIMEOUT_MS || '120000', 10),
+    syncTimeout: parseInt(args['sync-timeout'] || process.env.MCP_SYNC_TIMEOUT_S || '120', 10) * 1000,
+    defaultCommandTimeout: parseInt(process.env.MCP_DEFAULT_CMD_TIMEOUT_S || '600', 10) * 1000,
+    interactiveCommandTimeout: parseInt(process.env.MCP_INTERACTIVE_CMD_TIMEOUT_S || '300', 10) * 1000,
+    maxWaitTimeout: parseInt(process.env.MCP_MAX_WAIT_TIMEOUT_S || '600', 10) * 1000,
     
     // Configuration Pool SSH
     maxConnectionsPerServer: parseInt(process.env.MAX_CONNECTIONS_PER_SERVER || '5', 10),

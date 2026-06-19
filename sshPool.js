@@ -100,14 +100,10 @@ class SSHConnectionPool {
                             config: serverConfig
                         });
 
-                        // Ajouter un flag pour vérifier si la connexion est prête
-                        conn.isReady = true;
-
                         resolve({ id: connId, client: conn });
                     });
 
                     conn.on('error', (err) => {
-                        conn.isReady = false;
                         if (retries < this.config.retryAttempts) {
                             retries++;
                             queue.log('warn', `Tentative ${retries}/${this.config.retryAttempts} de connexion à ${serverAlias}`);
@@ -119,7 +115,6 @@ class SSHConnectionPool {
                     });
 
                     conn.on('close', () => {
-                        conn.isReady = false;
                         this.removeConnection(connId);
                         queue.log('info', `Connexion SSH fermée pour ${serverAlias}`);
                     });
@@ -242,7 +237,7 @@ class SSHConnectionPool {
                 return {
                     id: connId,
                     inUse: info?.inUse || false,
-                    ready: info?.conn?.isReady || false,
+                    ready: this.isConnectionReady(connId),
                     lastUsed: info?.lastUsed
                 };
             });
@@ -269,16 +264,5 @@ class SSHConnectionPool {
 
 // Instance singleton
 const sshPool = new SSHConnectionPool();
-
-// Nettoyer à la fermeture du processus
-process.on('SIGINT', () => {
-    sshPool.closeAll();
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    sshPool.closeAll();
-    process.exit(0);
-});
 
 export default sshPool;

@@ -25,29 +25,53 @@ function isStreamingCommand(cmd) {
 
 // Configuration des réponses automatiques pour les prompts interactifs
 const INTERACTIVE_RESPONSES = {
-    // Patterns courants et leurs réponses
     'continue connecting': 'yes',
     'Are you sure': 'yes',
-    'password:': null, // Sera géré séparément
-    'Password:': null,
     'Do you want to continue': 'y',
+    '[y/n]': 'y',
+    '(yes/no)': 'yes',
+    '(y/N)': 'y',
+    '(Y/n)': 'y',
     'Overwrite': 'y',
-    'Save': 'y'
+    'Save': 'y',
+    'accept': 'yes',
+    'confirm': 'yes',
+    'password:': 'PASSWORD_REQUIRED',
+    'Password:': 'PASSWORD_REQUIRED',
+    'sudo': 'PASSWORD_REQUIRED'
 };
 
 // Détecte si une sortie contient un prompt interactif
-function detectInteractivePrompt(output) {
+function detectInteractivePrompt(output, customResponses = {}) {
     const lastLine = output.split('\n').pop().toLowerCase();
+    const lastLines = output.split('\n').slice(-5).join('\n').toLowerCase();
 
+    // 1. Check custom responses first (supporte regex)
+    for (const [pattern, response] of Object.entries(customResponses)) {
+        try {
+            const regex = new RegExp(pattern, 'i');
+            if (regex.test(lastLines)) {
+                return { pattern, response, needsInput: true };
+            }
+        } catch (e) {
+            if (lastLines.includes(pattern.toLowerCase())) {
+                return { pattern, response, needsInput: true };
+            }
+        }
+    }
+
+    // 2. Check built-in patterns
     for (const [pattern, response] of Object.entries(INTERACTIVE_RESPONSES)) {
-        if (lastLine.includes(pattern.toLowerCase())) {
+        if (lastLines.includes(pattern.toLowerCase())) {
             return { pattern, response, needsInput: true };
         }
     }
 
-    // Vérifier les patterns qui attendent une entrée
+    // 3. Generic prompt detection
     if (lastLine.endsWith(':') || lastLine.endsWith('?') ||
-        lastLine.includes('[y/n]') || lastLine.includes('(yes/no)')) {
+        lastLine.includes('[y/n]') || lastLine.includes('(yes/no)') ||
+        lastLine.match(/^\s*\[\d+\]/) || lastLine.match(/^\s*\d+[.)]\s/) ||
+        lastLine.match(/choose|select|pick|enter|input/i)) {
         return { pattern: 'generic', response: null, needsInput: true };
     }
 
@@ -125,21 +149,25 @@ async function executeWithPooledConnection(connection, job, jobId, updateQueue =
             let lineCount = 0;
             const startTime = Date.now();
             const maxLines = job.maxLines || 1000;
-            const timeout = job.timeout || config.defaultCommandTimeout;
+            const userTimeout = job.timeout; // en secondes, 0 = infini
+            const timeoutMs = userTimeout === 0 ? 0 : (userTimeout ? userTimeout * 1000 : config.defaultCommandTimeout);
 
-            const timeoutId = setTimeout(() => {
-                stream.write('\x03'); // Envoyer Ctrl+C
-                setTimeout(() => {
-                    stream.close();
-                    const duration = Date.now() - startTime;
-                    const result = { output: output.trim(), stderr: stderr.trim(), exitCode: 124, duration, lineCount, timedOut: true };
-                    if (updateQueue) queue.updateJobStatus(jobId, 'completed', result);
-                    resolve(result);
-                }, 500);
-            }, timeout);
+            let timeoutId = null;
+            if (timeoutMs > 0) {
+                timeoutId = setTimeout(() => {
+                    stream.write('\x03');
+                    setTimeout(() => {
+                        stream.close();
+                        const duration = Date.now() - startTime;
+                        const result = { output: output.trim(), stderr: stderr.trim(), exitCode: 124, duration, lineCount, timedOut: true };
+                        if (updateQueue) queue.updateJobStatus(jobId, 'completed', result);
+                        resolve(result);
+                    }, 500);
+                }, timeoutMs);
+            }
 
             stream.on('close', (code, signal) => {
-                clearTimeout(timeoutId);
+                if (timeoutId) clearTimeout(timeoutId);
                 const duration = Date.now() - startTime;
                 const result = { output: output.trim(), stderr: stderr.trim(), exitCode: code, signal, duration, lineCount };
 
@@ -163,8 +191,8 @@ async function executeWithPooledConnection(connection, job, jobId, updateQueue =
                     setTimeout(() => stream.close(), 500);
                 }
                 if (job.autoRespond) {
-                    const prompt = detectInteractivePrompt(output);
-                    if (prompt.needsInput && prompt.response) {
+                    const prompt = detectInteractivePrompt(output, job.responses || {});
+                    if (prompt.needsInput && prompt.response && prompt.response !== 'PASSWORD_REQUIRED') {
                         stream.write(prompt.response + '\n');
                         queue.log('info', `Réponse automatique au prompt: ${prompt.pattern}`);
                     }
@@ -196,7 +224,7 @@ async function executeWithNewConnection(serverConfig, job, jobId) {
                 let responseSent = false;
 
                 const cleanupAndResolve = (status = 'completed') => {
-                    clearTimeout(jobTimeout);
+                    if (jobTimeout) clearTimeout(jobTimeout);
                     output = output.replace(END_MARKER, '').trim();
                     const result = { output, exitCode: 0 };
                     queue.updateJobStatus(jobId, status, result);
@@ -207,12 +235,16 @@ async function executeWithNewConnection(serverConfig, job, jobId) {
                     resolve(result);
                 };
 
-                const jobTimeout = setTimeout(() => {
-                    cleanupAndResolve('failed');
-                }, (job.timeout ? job.timeout * 1000 : config.interactiveCommandTimeout));
+                const timeoutMs = job.timeout === 0 ? 0 : (job.timeout ? job.timeout * 1000 : config.interactiveCommandTimeout);
+                let jobTimeout = null;
+                if (timeoutMs > 0) {
+                    jobTimeout = setTimeout(() => {
+                        cleanupAndResolve('failed');
+                    }, timeoutMs);
+                }
 
                 stream.on('close', () => {
-                    clearTimeout(jobTimeout); // Always clear timeout on close
+                    if (jobTimeout) clearTimeout(jobTimeout);
                     if (!output.includes(END_MARKER)) {
                         cleanupAndResolve('failed');
                     }

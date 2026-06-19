@@ -1,53 +1,51 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-console.error("✅ McpServer importé");
 const DEBUG = process.env.MCP_DEBUG === 'true';
 
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-console.error("✅ StdioServerTransport importé");
-
 import { z } from "zod";
-console.error("✅ zod importé");
-
 import queue from './queue.js';
-console.error("✅ queue importé");
-
 import servers from './servers.js';
-console.error("✅ servers importé");
-
 import sftp from './sftp.js';
-console.error("✅ sftp importé");
-
 import ssh from './ssh.js';
-console.error("✅ ssh importé");
-
 import history from './history.js';
-console.error("✅ history importé");
-
 import config from './config.js';
-console.error("✅ config importé");
-
 import apis from './apis.js';
+import sshPool from './sshPool.js';
+import utils from './utils.js';
+
 if (DEBUG) {
-    console.error("✅ apis importé");
-    console.error("=== TOUS LES IMPORTS RÉUSSIS ===");
+    console.error("✅ Tous les modules importés");
+    console.error("⏳ Initialisation de la queue...");
 }
 
-// ✅ INITIALISER EXPLICITEMENT ET ATTENDRE
-
-
-if (DEBUG) console.error("⏳ Initialisation de la queue...");
 await queue.init();
+
 if (DEBUG) console.error("✅ Queue initialisée");
+
+// Vérification des secrets en clair
+try {
+    const serverList = await servers.listServers();
+    for (const [alias, config] of Object.entries(serverList)) {
+        if (config.password) {
+            console.error(`[SECURITY WARN] Mot de passe en clair détecté pour le serveur '${alias}'. Utilisez une clé SSH ou Vaultwarden.`);
+        }
+    }
+    const apiList = await apis.listApis();
+    for (const [alias, config] of Object.entries(apiList)) {
+        if (config.api_key || config.htpasswd_pass) {
+            console.error(`[SECURITY WARN] Secret en clair détecté pour l'API '${alias}'. Utilisez Vaultwarden.`);
+        }
+    }
+} catch (e) { /* silencieux, pas bloquant */ }
 
 const server = new McpServer({
     name: "orchestrator",
-    version: "8.0.0", // Version avec gestion du streaming
+    version: "9.0.1",
     description: "Serveur pour l'orchestration de tâches distantes avec exécution hybride et configuration flexible."
 });
 
-console.error("✅ Serveur MCP créé");
+if (DEBUG) console.error("✅ Serveur MCP créé");
 
-// Ajout de l'outil system_diagnostics avant les autres
 server.registerTool(
     "system_diagnostics",
     {
@@ -76,7 +74,6 @@ server.registerTool(
 
 
 // --- OUTILS DE GESTION DES SERVEURS ---
-console.error("✅ Serveur MCP créé");
 
 server.registerTool(
     "server_add",
@@ -172,7 +169,12 @@ server.registerTool(
             const result = await apis.addApi(alias, apiConfig);
             return { content: [{ type: "text", text: result.message }] };
         } catch (e) {
-            return { content: [{ type: "text", text: `ERREUR: ${e.message}` }], isError: true };
+            const errorPayload = {
+                toolName: "api_add",
+                errorCode: "TOOL_EXECUTION_ERROR",
+                errorMessage: e.message
+            };
+            return { content: [{ type: "text", text: JSON.stringify(errorPayload, null, 2) }], isError: true };
         }
     }
 );
@@ -204,7 +206,12 @@ server.registerTool(
             const result = await apis.removeApi(params.alias);
             return { content: [{ type: "text", text: result.message }] };
         } catch (e) {
-            return { content: [{ type: "text", text: `ERREUR: ${e.message}` }], isError: true };
+            const errorPayload = {
+                toolName: "api_remove",
+                errorCode: "TOOL_EXECUTION_ERROR",
+                errorMessage: e.message
+            };
+            return { content: [{ type: "text", text: JSON.stringify(errorPayload, null, 2) }], isError: true };
         }
     }
 );
@@ -230,16 +237,18 @@ server.registerTool(
 
             // Gérer l'authentification htpasswd
             if ((apiConfig.auth_method === 'htpasswd' || apiConfig.auth_method === 'both') && apiConfig.htpasswd_user && apiConfig.htpasswd_pass) {
-                curlCmd += ` -u ${apiConfig.htpasswd_user}:${apiConfig.htpasswd_pass}`;
+                const credentials = `${apiConfig.htpasswd_user}:${apiConfig.htpasswd_pass}`;
+                curlCmd += ` -u ${utils.escapeShellArg(credentials)}`;
             }
 
             // Gérer l'authentification par clé API
             if ((apiConfig.auth_method === 'api_key' || apiConfig.auth_method === 'both') && apiConfig.api_key) {
                 const scheme = apiConfig.auth_scheme ? `${apiConfig.auth_scheme} ` : '';
-                curlCmd += ` -H '${apiConfig.auth_header_name || 'Authorization'}: ${scheme}${apiConfig.api_key}'`;
+                const headerValue = `${apiConfig.auth_header_name || 'Authorization'}: ${scheme}${apiConfig.api_key}`;
+                curlCmd += ` -H ${utils.escapeShellArg(headerValue)}`;
             }
 
-            curlCmd += ` ${url}`;
+            curlCmd += ` ${utils.escapeShellArg(url)}`;
 
             const job = queue.addJob({ type: 'ssh', alias: params.server_alias, cmd: curlCmd });
             ssh.executeCommand(job.id);
@@ -252,7 +261,12 @@ server.registerTool(
             const parsedOutput = ssh.parseApiHealth(result.output);
             return { content: [{ type: "text", text: JSON.stringify(parsedOutput, null, 2) }] };
         } catch (e) {
-            return { content: [{ type: "text", text: `ERREUR: ${e.message}` }], isError: true };
+            const errorPayload = {
+                toolName: "api_check",
+                errorCode: "TOOL_EXECUTION_ERROR",
+                errorMessage: e.message
+            };
+            return { content: [{ type: "text", text: JSON.stringify(errorPayload, null, 2) }], isError: true };
         }
     }
 );
@@ -343,7 +357,7 @@ server.registerTool(
     },
     async (params) => {
         try {
-            const cmd = `curl -o /dev/null -s -w '%{http_code}:%{time_total}' ${params.url}`;
+            const cmd = `curl -o /dev/null -s -w '%{http_code}:%{time_total}' ${utils.escapeShellArg(params.url)}`;
             const job = queue.addJob({
                 type: 'ssh',
                 alias: params.alias,
@@ -423,12 +437,17 @@ async function waitForJobCompletion(jobId, timeout) {
             if (job.status === 'completed' || job.status === 'failed') {
                 clearInterval(interval);
                 resolve(job);
-            } else if (Date.now() - startTime > timeout) {
+            } else if (timeout > 0 && Date.now() - startTime > timeout) {
                 clearInterval(interval);
                 resolve(null);
             }
         }, 200);
     });
+}
+
+function buildAsyncMessage(job, toolType) {
+    const waitCmd = `Utilisez task_wait avec l'ID ${job.id} pour attendre la fin et récupérer le résultat.`;
+    return `Tâche ${toolType} ${job.id} passée en arrière-plan (timeout dépassé). Statut actuel: ${job.status || 'pending'}.\n${waitCmd}`;
 }
 
 // --- EXÉCUTION DE TÂCHES ---
@@ -442,6 +461,7 @@ server.registerTool(
             direction: z.enum(['upload', 'download']),
             local: z.string().describe("Chemin absolu local."),
             remote: z.string().describe("Chemin absolu distant."),
+            force: z.boolean().optional().default(false).describe("Écraser les fichiers existants sans confirmation."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
         })
     },
@@ -459,7 +479,7 @@ ${JSON.stringify(finalJob, null, 2)}`
                 }]
             };
         } else {
-            return { content: [{ type: "text", text: `Tâche de transfert ${job.id} initiée en arrière-plan.` }] };
+            return { content: [{ type: "text", text: buildAsyncMessage(job, 'de transfert') }] };
         }
     }
 );
@@ -472,6 +492,7 @@ server.registerTool(
         inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             cmd: z.string().describe("La commande complète à exécuter."),
+            timeout: z.number().optional().describe("Timeout en secondes. 0 = pas de limite. Défaut: 600s (10 min)."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
         })
     },
@@ -489,7 +510,7 @@ ${finalJob.output || JSON.stringify(finalJob, null, 2)}`
                 }]
             };
         } else {
-            return { content: [{ type: "text", text: `Tâche d'exécution ${job.id} initiée en arrière-plan.` }] };
+            return { content: [{ type: "text", text: buildAsyncMessage(job, 'd\'exécution') }] };
         }
     }
 );
@@ -565,6 +586,7 @@ server.registerTool(
                 local: z.string().describe("Chemin local ou pattern glob (ex: /home/*.txt)"),
                 remote: z.string().describe("Chemin distant")
             })).describe("Liste des fichiers à transférer"),
+            force: z.boolean().optional().default(false).describe("Écraser les fichiers existants sans confirmation."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
         })
     },
@@ -582,7 +604,7 @@ server.registerTool(
         if (finalJob) {
             return { content: [{ type: "text", text: `Résultat transferts multiples (tâche ${finalJob.id}):\n${JSON.stringify(finalJob, null, 2)}` }] };
         } else {
-            return { content: [{ type: "text", text: `Tâche de transferts multiples ${job.id} initiée en arrière-plan.` }] };
+            return { content: [{ type: "text", text: buildAsyncMessage(job, 'de transferts multiples') }] };
         }
     }
 );
@@ -598,7 +620,7 @@ server.registerTool(
             interactive: z.boolean().optional().default(true).describe("Mode interactif."),
             autoRespond: z.boolean().optional().default(true).describe("Répondre automatiquement aux prompts standards."),
             responses: z.record(z.string()).optional().describe("Réponses personnalisées aux prompts (clé: pattern, valeur: réponse)."),
-            timeout: z.number().optional().describe("Timeout personnalisé en secondes. Défaut 2 minutes."),
+            timeout: z.number().optional().describe("Timeout en secondes. 0 = pas de limite. Défaut: 300s (5 min)."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
         })
     },
@@ -617,7 +639,7 @@ server.registerTool(
         if (finalJob) {
             return { content: [{ type: "text", text: `Résultat commande interactive (tâche ${finalJob.id}):\n${finalJob.output || JSON.stringify(finalJob, null, 2)}` }] };
         } else {
-            return { content: [{ type: "text", text: `Tâche interactive ${job.id} initiée en arrière-plan.` }] };
+            return { content: [{ type: "text", text: buildAsyncMessage(job, 'interactive') }] };
         }
     }
 );
@@ -638,6 +660,7 @@ server.registerTool(
                 })
             ])).min(1).describe("Liste des commandes à exécuter en séquence (minimum 1)."),
             continueOnError: z.boolean().optional().default(false).describe("Continuer même si une commande échoue."),
+            timeout: z.number().optional().describe("Timeout global en secondes. 0 = pas de limite. Défaut: 600s (10 min)."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
         })
     },
@@ -650,11 +673,12 @@ server.registerTool(
         history.logTask(job);
         ssh.executeCommandSequence(job.id);
 
-        const finalJob = await waitForJobCompletion(job.id, config.syncTimeout * params.commands.length);
+        const seqTimeout = params.timeout === 0 ? 0 : (params.timeout ? params.timeout * 1000 : config.syncTimeout * params.commands.length);
+        const finalJob = await waitForJobCompletion(job.id, seqTimeout);
         if (finalJob) {
             return { content: [{ type: "text", text: `Résultat séquence (tâche ${finalJob.id}):\n${JSON.stringify(finalJob, null, 2)}` }] };
         } else {
-            return { content: [{ type: "text", text: `Séquence de commandes ${job.id} initiée en arrière-plan.` }] };
+            return { content: [{ type: "text", text: buildAsyncMessage(job, 'de séquence') }] };
         }
     }
 );
@@ -773,7 +797,7 @@ server.registerTool(
         if (finalJob) {
             return { content: [{ type: "text", text: `📋 Logs PM2${params.app ? ` (${params.app})` : ''} - ${finalJob.lineCount || 0} lignes:\n\n${finalJob.output || '(vide)'}` }] };
         } else {
-            return { content: [{ type: "text", text: `Tâche ${job.id} initiée en arrière-plan.` }] };
+            return { content: [{ type: "text", text: buildAsyncMessage(job, 'PM2 logs') }] };
         }
     }
 );
@@ -782,7 +806,6 @@ server.registerTool(
     "get_docker_logs",
     {
         title: "Récupérer les logs Docker",
-        description: "Raccourci pour récupérer les logs d'un container Docker.",
         inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             container: z.string().describe("Nom ou ID du container Docker."),
@@ -795,7 +818,7 @@ server.registerTool(
         let cmd = `docker logs --tail ${params.lines}`;
         if (params.since) cmd += ` --since ${params.since}`;
         if (params.timestamps) cmd += ' --timestamps';
-        cmd += ` ${params.container}`;
+        cmd += ` ${utils.escapeShellArg(params.container)}`;
 
         const job = queue.addJob({ type: 'ssh', alias: params.alias, cmd: cmd, streaming: false });
         history.logTask(job);
@@ -805,7 +828,7 @@ server.registerTool(
         if (finalJob) {
             return { content: [{ type: "text", text: `🐳 Logs Docker (${params.container}) - ${finalJob.lineCount || 0} lignes:\n\n${finalJob.output || '(vide)'}` }] };
         } else {
-            return { content: [{ type: "text", text: `Tâche ${job.id} initiée en arrière-plan.` }] };
+            return { content: [{ type: "text", text: buildAsyncMessage(job, 'Docker logs') }] };
         }
     }
 );
@@ -822,7 +845,7 @@ server.registerTool(
         })
     },
     async (params) => {
-        const cmd = `tail -n ${params.lines} ${params.filepath}`;
+        const cmd = `tail -n ${params.lines} ${utils.escapeShellArg(params.filepath)}`;
         const job = queue.addJob({ type: 'ssh', alias: params.alias, cmd: cmd, streaming: false });
         history.logTask(job);
         ssh.executeCommand(job.id);
@@ -831,18 +854,159 @@ server.registerTool(
         if (finalJob) {
             return { content: [{ type: "text", text: `📄 Contenu de ${params.filepath} (${finalJob.lineCount || 0} lignes):\n\n${finalJob.output || '(vide)'}` }] };
         } else {
-            return { content: [{ type: "text", text: `Tâche ${job.id} initiée en arrière-plan.` }] };
+            return { content: [{ type: "text", text: buildAsyncMessage(job, 'tail') }] };
+        }
+    }
+);
+
+// --- OUTIL D'AIDE / GUIDE ---
+
+server.registerTool(
+    "help",
+    {
+        title: "Guide et documentation des outils",
+        description: "Affiche la documentation complète d'un outil ou la liste de tous les outils disponibles.",
+        inputSchema: z.object({
+            tool: z.string().optional().describe("Nom de l'outil à documenter. Laissez vide pour la liste complète.")
+        })
+    },
+    async (params) => {
+        const allTools = [
+            { name: "help", desc: "Guide et documentation des outils (celui-ci)." },
+            { name: "system_diagnostics", desc: "Diagnostic complet du système MCP (queue, pool, serveurs, APIs)." },
+            { name: "server_add", desc: "Ajouter/modifier un alias de serveur SSH." },
+            { name: "server_list", desc: "Lister tous les serveurs configurés." },
+            { name: "server_remove", desc: "Supprimer un alias de serveur." },
+            { name: "api_add", desc: "Ajouter une API au catalogue de monitoring." },
+            { name: "api_list", desc: "Lister toutes les APIs du catalogue." },
+            { name: "api_remove", desc: "Supprimer une API du catalogue." },
+            { name: "api_check", desc: "Test de santé d'une API via son alias (SSH curl)." },
+            { name: "get_system_resources", desc: "Métriques CPU, RAM, Disque d'un serveur." },
+            { name: "get_services_status", desc: "Statut des services systemd, Docker, PM2." },
+            { name: "check_api_health", desc: "Test HTTP direct sur une URL." },
+            { name: "get_fail2ban_status", desc: "Statut Fail2Ban (toutes les jails ou une spécifique)." },
+            { name: "task_exec", desc: "Exécuter une commande SSH. Timeout paramétrable (0=infini)." },
+            { name: "task_transfer", desc: "Transfert SFTP fichier/dossier. Paramètre force:true pour écraser." },
+            { name: "task_exec_interactive", desc: "SSH avec prompts interactifs (yes/no, menus). Supporte regex dans responses." },
+            { name: "task_exec_sequence", desc: "Séquence de commandes SSH sur le même serveur." },
+            { name: "task_transfer_multi", desc: "Transferts SFTP multiples avec patterns glob." },
+            { name: "task_queue", desc: "Voir toutes les tâches en cours/en attente." },
+            { name: "task_status", desc: "Détail d'une tâche par son ID." },
+            { name: "task_history", desc: "Historique des tâches, filtrable par alias." },
+            { name: "task_retry", desc: "Relancer une tâche échouée ou crashée." },
+            { name: "task_wait", desc: "Attendre la fin d'une tâche en arrière-plan (jusqu'à 600s)." },
+            { name: "task_logs", desc: "Logs internes du système MCP." },
+            { name: "queue_stats", desc: "Statistiques de la file d'attente." },
+            { name: "pool_stats", desc: "Statistiques du pool de connexions SSH." },
+            { name: "get_pm2_logs", desc: "Récupérer les logs PM2 d'une app." },
+            { name: "get_docker_logs", desc: "Récupérer les logs d'un container Docker." },
+            { name: "tail_file", desc: "Afficher les dernières lignes d'un fichier distant." }
+        ];
+
+        const envVars = [
+            { var: "MCP_DATA_DIR", defaut: "~/.config/mcp-orchestrator", desc: "Dossier des fichiers de données (JSON)." },
+            { var: "MCP_SYNC_TIMEOUT_S", defaut: "120", desc: "Délai en secondes avant passage en arrière-plan." },
+            { var: "MCP_DEFAULT_CMD_TIMEOUT_S", defaut: "600", desc: "Timeout SSH par défaut (0=infini)." },
+            { var: "MCP_INTERACTIVE_CMD_TIMEOUT_S", defaut: "300", desc: "Timeout mode interactif (0=infini)." },
+            { var: "MCP_MAX_WAIT_TIMEOUT_S", defaut: "600", desc: "Timeout maximum pour task_wait." },
+            { var: "MAX_CONNECTIONS_PER_SERVER", defaut: "5", desc: "Connexions SSH max par serveur." },
+            { var: "MIN_CONNECTIONS_PER_SERVER", defaut: "1", desc: "Connexions SSH min par serveur." },
+            { var: "IDLE_TIMEOUT", defaut: "300000", desc: "Délai avant fermeture connexion inactive (ms)." },
+            { var: "KEEP_ALIVE_INTERVAL", defaut: "30000", desc: "Intervalle keepalive SSH (ms)." },
+            { var: "MAX_QUEUE_SIZE", defaut: "1000", desc: "Nombre max de jobs dans la queue." },
+            { var: "SAVE_INTERVAL", defaut: "5000", desc: "Intervalle de sauvegarde de la queue (ms)." },
+            { var: "MCP_DEBUG", defaut: "false", desc: "Activer les logs de debug détaillés." },
+            { var: "MCP_TRANSPORT", defaut: "stdio", desc: "Transport: stdio, http, ou both (v9+)." },
+            { var: "MCP_HTTP_PORT", defaut: "3457", desc: "Port du serveur HTTP (si transport=http ou both)." }
+        ];
+
+        const usageTips = [
+            "Pour les longues opérations: utilisez timeout:0 sur task_exec, puis task_wait pour récupérer le résultat.",
+            "Transferts SFTP: si un fichier existe déjà, utilisez force:true pour l'écraser (sinon refusé).",
+            "Mode interactif: passez un objet responses avec des patterns→réponses pour les prompts attendus.",
+            "Les patterns dans responses supportent les regex. Ex: '[YyNn]\\\\?' → 'y'.",
+            "Utilisez task_queue pour voir les jobs en cours, task_status <id> pour un job précis.",
+            "Les jobs 'crashed' (rouges) sont réessayables avec task_retry."
+        ];
+
+        if (params.tool) {
+            const tool = allTools.find(t => t.name === params.tool);
+            if (!tool) {
+                const errorPayload = { toolName: "help", errorCode: "UNKNOWN_TOOL", errorMessage: `Outil '${params.tool}' inconnu. Utilisez help sans paramètre pour la liste.` };
+                return { content: [{ type: "text", text: JSON.stringify(errorPayload, null, 2) }], isError: true };
+            }
+            return { content: [{ type: "text", text: `Outil: ${tool.name}\nDescription: ${tool.desc}\n\nUtilisez help sans paramètre pour voir tous les outils et variables d'environnement.` }] };
+        }
+
+        const guide = `=== GUIDE MCP ORCHESTRATOR v9.0.1 ===
+
+OUTILS DISPONIBLES (${allTools.length}):
+${allTools.map(t => `  ${t.name}: ${t.desc}`).join('\n')}
+
+VARIABLES D'ENVIRONNEMENT (.env):
+${envVars.map(v => `  ${v.var} (défaut: ${v.defaut}) — ${v.desc}`).join('\n')}
+
+ASTUCES D'UTILISATION:
+${usageTips.map(t => `  • ${t}`).join('\n')}
+
+Pour la doc complète: help tool:<nom> ou consultez le README.`;
+
+        return { content: [{ type: "text", text: guide }] };
+    }
+);
+
+// --- ATTENTE EXPLICITE ---
+
+server.registerTool(
+    "task_wait",
+    {
+        title: "Attendre la fin d'une tâche en arrière-plan",
+        description: `Prend un ID de job et attend jusqu'à ${config.maxWaitTimeout / 1000}s que la tâche se termine, puis retourne le résultat.`,
+        inputSchema: z.object({
+            id: z.string().describe("L'ID de la tâche à attendre.")
+        })
+    },
+    async (params) => {
+        const existingJob = queue.getJob(params.id);
+        if (!existingJob) {
+            const errorPayload = {
+                toolName: "task_wait",
+                errorCode: "JOB_NOT_FOUND",
+                errorMessage: `Tâche '${params.id}' introuvable.`
+            };
+            return { content: [{ type: "text", text: JSON.stringify(errorPayload, null, 2) }], isError: true };
+        }
+
+        if (existingJob.status === 'completed' || existingJob.status === 'failed') {
+            return { content: [{ type: "text", text: `Tâche ${params.id} déjà terminée:\n${JSON.stringify(existingJob, null, 2)}` }] };
+        }
+
+        const finalJob = await waitForJobCompletion(params.id, config.maxWaitTimeout);
+        if (finalJob) {
+            return { content: [{ type: "text", text: `Résultat tâche ${finalJob.id}:\n${JSON.stringify(finalJob, null, 2)}` }] };
+        } else {
+            return { content: [{ type: "text", text: `Tâche ${params.id} toujours en cours (peut-être terminée entre-temps). Réessayez task_wait.` }] };
         }
     }
 );
 
 // --- DÉMARRAGE DU SERVEUR ---
 async function main() {
-    console.error("🔌 Connexion du transport stdio...");
+    if (DEBUG) console.error("🔌 Connexion du transport stdio...");
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("🚀 Serveur connecté et prêt !");
+    if (DEBUG) console.error("🚀 Serveur stdio connecté et prêt !");
 }
+
+async function shutdown() {
+    if (DEBUG) console.error("Arrêt du serveur...");
+    await queue.shutdown();
+    sshPool.closeAll();
+    process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 main().catch((error) => {
     console.error("Erreur fatale du serveur:", error);

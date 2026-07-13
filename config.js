@@ -35,6 +35,9 @@ const config = {
     idleTimeout: parseInt(process.env.IDLE_TIMEOUT || '300000', 10),
     keepAliveInterval: parseInt(process.env.KEEP_ALIVE_INTERVAL || '30000', 10),
     
+    // Sécurité
+    allowedRoots: (process.env.MCP_ALLOWED_ROOTS || '').split(',').map(s => s.trim()).filter(Boolean),
+    
     // Configuration Queue
     maxQueueSize: parseInt(process.env.MAX_QUEUE_SIZE || '1000', 10),
     saveInterval: parseInt(process.env.SAVE_INTERVAL || '5000', 10),

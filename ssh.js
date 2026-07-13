@@ -4,6 +4,7 @@ import queue from './queue.js';
 import serverManager from './servers.js';
 import sshPool from './sshPool.js';
 import config from './config.js';
+import policies from './policies.js';
 
 const STREAMING_COMMANDS = [
     /^pm2\s+logs?\b/i,
@@ -87,6 +88,15 @@ async function executeCommand(jobId) {
 
     try {
         const serverConfig = await serverManager.getServer(job.alias);
+
+        if (!job.skip_policy) {
+            const policyCheck = await policies.check(job.cmd);
+            if (policyCheck.blocked) {
+                queue.updateJobStatus(jobId, 'failed', { error: `Commande bloquée par la politique de sécurité (pattern: "${policyCheck.pattern}"). Utilisez skip_policy:true pour forcer.` });
+                return;
+            }
+        }
+
         queue.updateJobStatus(jobId, 'running');
 
         // Utiliser le pool de connexions si pas de mode interactif
@@ -102,7 +112,8 @@ async function executeCommand(jobId) {
         }
 
     } catch (err) {
-        queue.updateJobStatus(jobId, 'failed', { error: err.message });
+        const existing = queue.getJob(jobId) || {};
+        queue.updateJobStatus(jobId, 'failed', { ...existing, error: err.message });
     } finally {
         // Libérer la connexion si elle vient du pool
         if (connection) {
@@ -456,7 +467,7 @@ function parseServicesStatus(output) {
 
     try {
         const sections = output.split(/---DOCKER---|---PM2---/);
-        const systemdRaw = sections[0] || '';
+        const systemdRaw = (sections[0] || '').replace(/^---SYSTEMD---\s*/, '');
         const dockerRaw = sections[1] || '';
         const pm2Raw = sections[2] || '';
 

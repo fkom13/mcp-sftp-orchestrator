@@ -4,6 +4,8 @@ import path from 'path';
 import { glob } from 'glob';
 import queue from './queue.js';
 import serverManager from './servers.js';
+import sourceAdapter from './sourceAdapter.js';
+import fileOps from './fileOps.js';
 import micromatch from 'micromatch';
 
 // Fonction utilitaire pour créer un dossier parent si nécessaire
@@ -138,6 +140,18 @@ async function executeTransfer(jobId) {
                     const downloadedCount = await handleDownload(sftp, file.remote, file.local, force);
                     totalFiles += downloadedCount;
                     successCount += downloadedCount;
+                } else if (job.direction === 'server_to_server') {
+                    // Transfert direct entre deux serveurs distants (ou local↔remote inversé)
+                    const srcAlias = file.source_alias || job.source_alias;
+                    const srcPath = file.source_path || file.local || file.remote;
+                    const tgtAlias = job.alias;
+                    const tgtPath = file.remote;
+
+                    queue.log('info', `Transfert server_to_server${progress}: ${srcAlias}:${srcPath} → ${tgtAlias}:${tgtPath}`);
+                    const buf = await sourceAdapter.readFile({ type: 'remote', alias: srcAlias, path: srcPath });
+                    await sourceAdapter.writeFile({ type: 'remote', alias: tgtAlias, path: tgtPath }, buf.content, { createDirs: true });
+                    successCount++;
+                    totalFiles++;
                 }
             } catch (err) {
                 queue.log('error', `Échec transfert ${file.local || file.remote}: ${err.message}`);

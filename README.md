@@ -1,58 +1,76 @@
-# 🚀 MCP Orchestrator — Serveur d'orchestration SSH/SFTP
+# 🚀 MCP Orchestrator — SSH/SFTP Infrastructure Orchestration Server
 
-**Version** : 9.0.1  
+**Version** : 11.3.0  
 **License** : MIT  
 **Node** : >= 18.0.0
 
-Un serveur MCP (Model Context Protocol) qui donne à un agent IA la capacité d'exécuter des commandes SSH, des transferts SFTP, et du monitoring sur des serveurs distants. File d'attente persistante, pool de connexions SSH, exécution hybride synchrone/asynchrone.
+A Model Context Protocol (MCP) server that turns any AI agent (Claude, OpenCode, Cursor...) into a full-fledged system administrator. Persistent queue, SSH connection pool, hybrid sync/async execution.
+
+### ✨ Key Features
+- **63 MCP tools** — SSH, SFTP, file ops, monitoring, snapshots, tunnels
+- **Built-in security** — Command blocklist, port allowlist, hash protection
+- **Multi-server** — `task_exec {alias:["vps1","vps2"]}` or `alias:"all"}`
+- **Persistence** — tmux + persistent queue = sessions that survive crashes
+- **Snapshots** — Deduplicated versioning of your critical files
+- **SSH Tunnels** — Local, Remote, SOCKS5 with secured port allowlist
+- **AI Guide** — Built-in manual for the agent (section:index/workflows/audit/security)
+
+> **🇫🇷 Version française :** [README.fr.md](README.fr.md)
 
 ---
 
 ## 📦 Installation
 
+### Via npx (recommended)
 ```bash
-git clone https://github.com/fkom13/mcp-sftp-orchestrator.git
-cd sftp-mcp
-npm install
-cp .env.example .env
-# Éditer .env avec vos chemins
+npx @fkom13/mcp-sftp-orchestrator
 ```
 
-Prérequis : Node.js >= 18.0.0
+### Via git
+```bash
+git clone https://github.com/fkom13/mcp-sftp-orchestrator.git
+cd mcp-sftp-orchestrator
+npm install
+cp .env.example .env
+# Edit .env with your paths
+```
+
+Requirements: Node.js >= 18.0.0
 
 ---
 
 ## ⚙️ Configuration (.env)
 
-Toutes les variables sont optionnelles. Les valeurs par défaut sont conçues pour un usage standard.
+All variables are optional. Defaults are designed for standard usage.
 
-| Variable | Défaut | Description |
-|----------|--------|-------------|
-| `MCP_DATA_DIR` | `~/.config/mcp-orchestrator` | Dossier où sont stockés `servers.json`, `apis.json`, `queue.json`, `history.json` |
-| `MCP_SYNC_TIMEOUT_S` | `120` | Délai en secondes avant qu'une tâche passe en arrière-plan (retour immédiat au client, tâche continue) |
-| `MCP_DEFAULT_CMD_TIMEOUT_S` | `600` | Timeout SSH par défaut en secondes. `0` = aucune limite |
-| `MCP_INTERACTIVE_CMD_TIMEOUT_S` | `300` | Timeout pour les commandes interactives. `0` = aucune limite |
-| `MCP_MAX_WAIT_TIMEOUT_S` | `600` | Timeout maximum pour l'outil `task_wait` |
-| `MAX_CONNECTIONS_PER_SERVER` | `5` | Nombre max de connexions SSH simultanées par serveur |
-| `MIN_CONNECTIONS_PER_SERVER` | `1` | Nombre min de connexions SSH maintenues par serveur |
-| `IDLE_TIMEOUT` | `300000` | Délai en ms avant fermeture d'une connexion SSH inactive (5 min) |
-| `KEEP_ALIVE_INTERVAL` | `30000` | Intervalle keepalive SSH en ms (30s) |
-| `MAX_QUEUE_SIZE` | `1000` | Nombre maximum de jobs dans la file d'attente |
-| `SAVE_INTERVAL` | `5000` | Intervalle de sauvegarde de la queue sur disque en ms (5s) |
-| `MCP_DEBUG` | `false` | `true` pour activer les logs détaillés dans stderr |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_DATA_DIR` | `~/.config/mcp-orchestrator` | Data directory (servers.json, apis.json, queue.json) |
+| `MCP_SYNC_TIMEOUT_S` | `120` | Seconds before background execution |
+| `MCP_DEFAULT_CMD_TIMEOUT_S` | `600` | Default SSH timeout (0 = unlimited) |
+| `MCP_INTERACTIVE_CMD_TIMEOUT_S` | `300` | Interactive command timeout (0 = unlimited) |
+| `MCP_MAX_WAIT_TIMEOUT_S` | `600` | Max timeout for `task_wait` |
+| `MAX_CONNECTIONS_PER_SERVER` | `5` | Max parallel SSH connections per server |
+| `MIN_CONNECTIONS_PER_SERVER` | `1` | Min pooled connections per server |
+| `IDLE_TIMEOUT` | `300000` | Idle connection close delay (ms) |
+| `KEEP_ALIVE_INTERVAL` | `30000` | SSH keepalive interval (ms) |
+| `MAX_QUEUE_SIZE` | `1000` | Max jobs in queue |
+| `SAVE_INTERVAL` | `5000` | Queue disk save interval (ms) |
+| `MCP_ALLOWED_ROOTS` | *(empty)* | Restrict file access to these roots (comma-separated). Empty = full access |
+| `MCP_DEBUG` | `false` | Enable detailed debug logs |
 
 ---
 
-## 🔌 Connexion au client MCP (OpenCode, Claude Desktop, etc.)
+## 🔌 MCP Client Configuration (OpenCode, Claude Desktop, etc.)
 
 ```json
 {
   "mcpServers": {
     "orchestrator": {
       "command": "node",
-      "args": ["/chemin/vers/sftp-mcp/server.js"],
+      "args": ["/path/to/sftp-mcp/server.js"],
       "env": {
-        "MCP_DATA_DIR": "/chemin/vers/sftp-mcp/data"
+        "MCP_DATA_DIR": "/path/to/sftp-mcp/data"
       }
     }
   }
@@ -61,164 +79,296 @@ Toutes les variables sont optionnelles. Les valeurs par défaut sont conçues po
 
 ---
 
-## 🧰 Référence des Outils (29 outils)
+## 🧰 Tool Reference (63 tools)
 
-### Diagnostic & Aide
-| Outil | Description |
-|-------|-------------|
-| `help` | Guide complet : liste des outils, variables .env, astuces d'utilisation |
-| `system_diagnostics` | Diagnostic complet (queue, pool, serveurs, APIs). `verbose:true` pour les logs |
+### Help & Diagnostics
+| Tool | Description |
+|------|-------------|
+| `help` | Complete guide: tools, env vars, parameter schemas |
+| `guide` | AI manual: workflows, cheatsheet, audit, security |
+| `system_diagnostics` | Full system diagnostic (queue, pool, servers, APIs) |
 
-### Gestion des Serveurs
-| Outil | Description |
-|-------|-------------|
-| `server_add` | Ajouter/modifier un alias de serveur (host, user, keyPath ou password) |
-| `server_list` | Lister tous les serveurs configurés avec leurs détails |
-| `server_remove` | Supprimer un alias de serveur |
+### Server Management
+| Tool | Description |
+|------|-------------|
+| `server_add` | Add/update a server alias |
+| `server_list` | List all configured servers |
+| `server_remove` | Remove a server alias |
+| `infra_overview` | Fleet-wide overview (roles, services, warnings) |
+| `server_note_set/get/list/remove` | Documented server context |
 
-### Gestion du Catalogue API
-| Outil | Description |
-|-------|-------------|
-| `api_add` | Ajouter une API au catalogue de monitoring |
-| `api_list` | Lister toutes les APIs configurées |
-| `api_remove` | Supprimer une API du catalogue |
-| `api_check` | Test de santé d'une API via son alias (utilise SSH + curl) |
+### Security (Blocklist)
+| Tool | Description |
+|------|-------------|
+| `policy_blocklist_list` | List blocked commands |
+| `policy_blocklist_add` | Add a pattern to blocklist |
+| `policy_blocklist_remove` | Remove a pattern from blocklist |
 
-### Exécution de Tâches
-| Outil | Description |
-|-------|-------------|
-| `task_exec` | Exécuter une commande SSH. Paramètre `timeout` en secondes (`0` = infini) |
-| `task_exec_interactive` | SSH avec gestion des prompts (yes/no, menus, passwords). Supporte `responses` avec regex |
-| `task_exec_sequence` | Séquence de plusieurs commandes SSH sur le même serveur |
-| `task_transfer` | Transfert SFTP fichier ou dossier. `force:true` pour écraser sans confirmation |
-| `task_transfer_multi` | Transferts SFTP multiples avec support de patterns glob (`*`, `?`, `[]`) |
+### Task Execution
+| Tool | Description |
+|------|-------------|
+| `task_exec` | SSH one-shot. Supports `alias:["vps1","vps2"]` or `alias:"all"` |
+| `task_exec_interactive` | SSH with interactive prompt handling |
+| `task_exec_sequence` | Sequential SSH commands |
+| `task_transfer` | SFTP transfer. Supports `server_to_server` |
+| `task_transfer_multi` | Bulk transfers with glob patterns |
 
 ### Monitoring
-| Outil | Description |
-|-------|-------------|
-| `get_system_resources` | CPU, RAM, Disque d'un serveur |
-| `get_services_status` | Statut des services systemd, Docker, PM2 |
-| `get_fail2ban_status` | Statut Fail2Ban (toutes les jails ou une spécifique) |
-| `check_api_health` | Test HTTP direct sur une URL (via SSH + curl) |
+| Tool | Description |
+|------|-------------|
+| `get_system_resources` | CPU, RAM, Disk metrics |
+| `get_services_status` | systemd, Docker, PM2 status (graceful fallback) |
+| `get_fail2ban_status` | Fail2Ban status |
+| `check_api_health` | HTTP health check |
 
 ### Logs
-| Outil | Description |
-|-------|-------------|
-| `get_pm2_logs` | Logs PM2 d'une application spécifique ou toutes |
-| `get_docker_logs` | Logs d'un container Docker |
-| `tail_file` | Dernières lignes d'un fichier distant (équivalent `tail -n`) |
+| Tool | Description |
+|------|-------------|
+| `get_pm2_logs` | PM2 logs |
+| `get_docker_logs` | Docker logs |
+| `tail_file` | Tail a remote file |
 
-### File d'Attente & Suivi
-| Outil | Description |
-|-------|-------------|
-| `task_queue` | Voir toutes les tâches (en cours, en attente, terminées) |
-| `task_status` | Détail complet d'une tâche par son ID |
-| `task_history` | Historique des tâches exécutées, filtrable par alias |
-| `task_retry` | Relancer une tâche échouée ou crashée |
-| `task_wait` | Attendre la fin d'une tâche passée en arrière-plan (jusqu'à 600s) |
-| `task_logs` | Logs internes du système MCP |
-| `queue_stats` | Statistiques de la file d'attente |
-| `pool_stats` | Statistiques du pool de connexions SSH |
+### File Operations (Local + Remote)
+| Tool | Description |
+|------|-------------|
+| `file_read` | Read file + SHA-256 hash (edit protection) |
+| `file_write` | Create/overwrite with `dryRun` and `backup` |
+| `file_edit` | Surgical or full edit + hash protection |
+
+### Comparison & Drift Detection
+| Tool | Description |
+|------|-------------|
+| `diff_files` | Compare 2 files (local/remote, cross-server) |
+| `diff_folders` | Compare 2 directories |
+| `compare_all_sources` | Detect drifts across N servers |
+
+### Persistent Shell Sessions
+| Tool | Description |
+|------|-------------|
+| `shell_create` | Open a persistent shell (cd/env preserved) |
+| `shell_exec` | Execute in an existing session |
+| `shell_list` / `shell_close` | List/close sessions |
+
+### tmux (Surviving Terminal Sessions)
+| Tool | Description |
+|------|-------------|
+| `tmux_create` | Create a persistent tmux session |
+| `tmux_exec` | Send a command to a session |
+| `tmux_read` | Read session buffer |
+| `tmux_list` / `tmux_kill` | List/kill sessions |
+
+### SSH Tunnels
+| Tool | Description |
+|------|-------------|
+| `tunnel_create` | Local/remote/SOCKS5 tunnel, persistent via tmux |
+| `tunnel_list` | List active tunnels |
+| `tunnel_close` | Close a tunnel |
+| `tunnel_allowlist_add/remove` | Manage allowed ports |
+
+### Snapshots (File Versioning)
+| Tool | Description |
+|------|-------------|
+| `snapshot_create` | Capture file state with deduplication |
+| `snapshot_list` | List snapshots |
+| `snapshot_diff` | Compare 2 snapshots |
+| `snapshot_restore` | Restore (dryRun by default) |
+| `snapshot_delete` | Delete + orphan cleanup |
+
+### Queue & Monitoring
+| Tool | Description |
+|------|-------------|
+| `task_queue` | View all active/pending tasks |
+| `task_status` | Task detail by ID |
+| `task_history` | Filterable history |
+| `task_retry` | Retry a failed task |
+| `task_wait` | Wait for a background task |
+| `task_logs` | MCP internal logs |
+| `queue_stats` / `pool_stats` | Queue and SSH pool stats |
+
+### API Catalog
+| Tool | Description |
+|------|-------------|
+| `api_add` / `api_list` / `api_remove` | API monitoring catalog |
+| `api_check` | Health check via SSH + curl |
 
 ---
 
-## 📖 Guide d'Utilisation
+## 📖 Usage Examples
 
-### Commandes longues (docker build, grosses installs)
+### Multi-server
+```bash
+# One command, multiple servers
+task_exec {alias:["vps1","vps2","vps3"], cmd:"uptime"}
 
-```
-1. Lancer avec timeout:0 → task_exec { alias: "vps", cmd: "docker build ...", timeout: 0 }
-2. Si ça dépasse 120s → passe en arrière-plan avec un ID
-3. Récupérer le résultat → task_wait { id: "abc123" }
-```
-
-### Transferts SFTP (façon FileZilla)
-
-- **Fichier nouveau** : upload/download sans rien de spécial
-- **Fichier existe déjà** : refusé avec message "Utilisez force:true pour écraser"
-- **Avec `force: true`** : écrase sans rien demander
-- **Dossier → dossier** : transfert récursif automatique
-- **Patterns glob** : `task_transfer_multi` avec `*.txt`, `data?.json`, etc.
-
-### Mode interactif
-
-```json
-{
-  "alias": "vps",
-  "cmd": "apt upgrade",
-  "interactive": true,
-  "autoRespond": true,
-  "responses": {
-    "Do you want to continue": "y",
-    "restart services": "yes"
-  }
-}
+# Entire fleet
+task_exec {alias:"all", cmd:"df -h /"}
 ```
 
-Les clés de `responses` supportent les expressions régulières. Ex: `"[YyNn]\\\\?"` → `"y"`.
+### SOCKS5 Proxy Tunnel
+```bash
+tunnel_create {name:"proxy", type:"socks", listen_port:1080, via:"vps_paris"}
+# → Browser → SOCKS5 127.0.0.1:1080 → Paris VPS
+```
+
+### Local Tunnel (access remote service)
+```bash
+tunnel_create {name:"crm", type:"local", listen_port:8080, target:"127.0.0.1:3100", via:"vps_prod"}
+# → http://localhost:8080 → production CRM
+```
+
+### Remote Tunnel (expose local service)
+```bash
+tunnel_create {name:"dev", type:"remote", listen_port:9090, target:"127.0.0.1:3000", via:"vps", source:"vps_prod", key_path:"/home/user/.ssh/vps.key"}
+# → vps_prod:9090 → your local machine:3000
+```
+
+### Persistent tmux Session
+```bash
+tmux_create {alias:"vps", name:"build", start_cmd:"npm run build"}
+tmux_read {alias:"vps", session:"build"}
+tmux_kill {alias:"vps", session:"build"}
+```
+
+### Security Blocklist
+```bash
+# List blocked commands
+policy_blocklist_list
+# → ["rm -rf /", "mkfs*", ...]
+
+# Conscious bypass
+task_exec {alias:"vps", cmd:"rm -rf /tmp/cache", skip_policy:true}
+```
+
+### Secure File Editing
+```bash
+# Read + hash
+file_read {source:{type:"remote", alias:"vps", path:"/etc/nginx/nginx.conf"}}
+# → content + hash
+
+# Edit with protection
+file_edit {source:{type:"remote", alias:"vps", path:"/etc/nginx/nginx.conf"},
+           oldString:"worker_connections 768;",
+           newString:"worker_connections 1024;",
+           expectedHash:"abc123...",
+           backup:true}
+
+# Preview without writing
+file_edit {source:{type:"remote", alias:"vps", path:"/etc/nginx/nginx.conf"},
+           oldString:"worker_connections 768;",
+           newString:"worker_connections 1024;",
+           dryRun:true}
+```
+
+### Snapshot Before Risky Changes
+```bash
+# Before
+snapshot_create {source:{type:"remote", alias:"vps"}, paths:["/etc/nginx/"], tag:"before-fix"}
+
+# After if something broke
+snapshot_restore {snapshotId:"...", target:{type:"remote", alias:"vps"}, dryRun:false, force:true}
+```
+
+### Multi-server Drift Detection
+```bash
+compare_all_sources {sources:[
+  {type:"remote", alias:"vps1", path:"/etc/nginx/nginx.conf", label:"prod"},
+  {type:"remote", alias:"vps2", path:"/etc/nginx/nginx.conf", label:"staging"}
+]}
+```
+
+---
+
+## 📚 AI Built-in Manual (guide)
+
+The orchestrator includes an interactive manual for your AI agent:
+
+```bash
+guide section:index       # Table of contents
+guide section:workflows   # Copy-paste recipes
+guide section:cheatsheet  # Tool → usage table
+guide section:audit       # Full fleet audit in 8 steps
+guide section:security    # Blocklist + tunnels
+guide section:pitfalls    # Common mistakes
+```
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-Client MCP (stdio ou HTTP)
+MCP Client (stdio)
     │
-server.js ─── 29 outils MCP enregistrés
+server.js ─── 63 MCP tools registered
     │
-    ├── queue.js ─── File d'attente persistante (JSON + backup auto)
-    ├── ssh.js ───── Exécution SSH (pool ou connexion dédiée interactive)
-    ├── sftp.js ──── Transferts SFTP (upload/download, glob, force)
-    ├── sshPool.js ─ Pool de connexions SSH persistantes (max 5/serveur)
-    ├── servers.js ─ CRUD alias de serveurs
-    ├── apis.js ──── CRUD catalogue d'APIs
-    ├── history.js ─ Historique des 500 dernières tâches
-    ├── config.js ── Configuration centralisée (CLI > .env > defaults)
-    └── utils.js ─── Utilitaires (escapeShellArg)
+    ├── queue.js ─────── Persistent job queue (JSON + backup)
+    ├── ssh.js ───────── SSH execution (pool + dedicated connections)
+    ├── sftp.js ──────── SFTP transfers (upload/download/multi)
+    ├── sshPool.js ───── Persistent SSH connection pool
+    ├── servers.js ───── CRUD server aliases
+    ├── apis.js ──────── CRUD API catalog
+    ├── history.js ───── Task history
+    ├── config.js ────── Centralized configuration
+    ├── utils.js ─────── Utilities (escapeShellArg)
+    ├── fileOps.js ───── File operations (read/write/edit)
+    ├── diffEngine.js ── Diff engine (files/dirs/sources)
+    ├── compareEngine.js ─ Multi-source comparison
+    ├── diffFormatter.js ─ Diff formatting
+    ├── sourceAdapter.js ─ Local/remote abstraction
+    ├── shellSessions.js ─ Persistent shell sessions
+    ├── snapshotManager.js ─ Versioned snapshots
+    ├── notes.js ──────── Documented server context
+    ├── policies.js ──── Command blocklist
+    ├── tunnels.js ────── SSH tunnels (local/remote/SOCKS)
+    ├── guide.js ──────── AI built-in manual
+    └── diagnose.js ───── Diagnostics
 ```
 
-### Cycle de vie d'un job
+### Job Lifecycle
 
 ```
 pending → running → completed / failed
-                      ↓ (si redémarrage pendant running)
+                      ↓ (on restart)
                     crashed → retry → pending
 ```
 
 ---
 
-## 🔒 Sécurité
+## 🔒 Security
 
-- **`escapeShellArg()`** : toutes les URLs et chemins sont échappés avant d'être passés à curl/shell
-- **Détection de secrets en clair** : au démarrage, un warning est loggé si `servers.json` ou `apis.json` contiennent des mots de passe/clés API
-- **Recommandation** : utilisez des clés SSH (pas de mots de passe) et stockez les clés API dans Vaultwarden plutôt qu'en clair
+- **Command Blocklist** : `rm -rf /`, `mkfs*`, fork bombs, and other destructive commands are blocked by default
+- **Conscious bypass** : `skip_policy: true` to force execution
+- **Tunnel port allowlist** : only explicitly allowed ports can be used
+- **File access restriction** : `MCP_ALLOWED_ROOTS` env var to limit file operations to specific directories
+- **`escapeShellArg()`** : all URLs and paths are escaped before being passed to curl/shell
+- **Plaintext secret detection** : warning on startup if passwords/API keys are in plaintext
+- **Pre-modification snapshots** : `backup:true` on file_edit/file_write for instant rollback
+- **Recommendation** : use SSH keys (not passwords), store secrets in Vaultwarden
 
 ---
 
 ## 🧪 Tests
 
 ```bash
-node diagnose.js        # Diagnostic complet
-node test_mcp.js        # Test smoke MCP
-node test_features.js   # Tests unitaires (queue, pool, glob, prompts, crash)
+node diagnose.js        # Full diagnostic
+node test_mcp.js        # MCP smoke test
+node test_features.js   # Unit tests (queue, pool, glob, prompts, crash)
 ```
 
 ---
 
 ## 🛣️ Roadmap
 
-| Version | Changement |
-|---------|------------|
-| 8.2.0 | Ménage, uniformisation erreurs, nettoyage logs |
-| 8.3.0 | Transferts SFTP blindés (fichier vs dossier, force:true) |
-| 8.4.0 | Timeouts longues opérations, task_wait |
-| 8.5.0 | SSH interactif amélioré (menus, regex, password) |
-| 8.6.0 | Sécurité (escapeShellArg, détection secrets) |
-| 9.0.0 | Nettoyage, uniformisation finale, outil help, transport stdio uniquement |
-| 9.0.1 | Corrections sécurité (injection shell, vestiges code) |
+| Version | Changes |
+|---------|---------|
+| 10.0.0 | New tools: file_read/write/edit, diff, snapshots, shell, notes |
+| 10.4.0 | server_to_server, help with schemas, audit guide |
+| 11.0.0 | Command Blocklist, Multi-host (`alias:"all"`), tmux |
+| 11.2.0 | SSH Tunnels (local/remote/SOCKS5), allowlist, ssh2 stderr fix |
+| 11.3.0 | AllowedRoots (`MCP_ALLOWED_ROOTS`) for file restriction |
+| 12.0.0 (planned) | Auto key setup for tunnels, webhooks, static dashboard |
 
 ---
 
-## 📄 Licence
+## 📄 License
 
 MIT — Copyright (c) 2025-2026 Franck (fkom13)

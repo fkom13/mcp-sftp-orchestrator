@@ -2,6 +2,8 @@ import { Client } from 'ssh2';
 import fs from 'fs/promises';
 import crypto from 'crypto';
 import serverManager from './servers.js';
+import policies from './policies.js';
+import utils from './utils.js';
 
 /**
  * shellSessions — Sessions shell PTY PERSISTANTES sur serveurs distants.
@@ -34,7 +36,7 @@ class ShellSessionManager {
         const sc = await serverManager.getServer(alias);
         const config = {
             host: sc.host,
-            port: sc.port || 22,
+            port: utils.resolveSshPort(sc),
             username: sc.user,
             readyTimeout: 20000,
             keepaliveInterval: 30000,
@@ -168,8 +170,17 @@ class ShellSessionManager {
 
     /**
      * Exécute une commande dans une session existante (état persistant).
+     * options = { timeoutSec, skip_policy }
      */
-    async execInSession(id, command, timeoutSec) {
+    async execInSession(id, command, timeoutSec, options = {}) {
+        // Rétrocompat : 3e arg peut être un number (timeout) ou un objet options
+        let opts = options;
+        let timeout = timeoutSec;
+        if (typeof timeoutSec === 'object' && timeoutSec !== null) {
+            opts = timeoutSec;
+            timeout = opts.timeoutSec ?? opts.timeout;
+        }
+
         const session = this.sessions.get(id);
         if (!session) throw new Error(`Session '${id}' introuvable. Utilisez shell_list pour voir les sessions actives.`);
         if (session.closed) {
@@ -178,14 +189,31 @@ class ShellSessionManager {
         }
         if (session.busy) throw new Error(`Session '${id}' occupée : une seule commande à la fois par session.`);
 
+        if (!opts.skip_policy) {
+            const policyCheck = await policies.check(command);
+            if (policyCheck.blocked) {
+                throw new Error(
+                    `Commande bloquée par la politique de sécurité (pattern: "${policyCheck.pattern}"). ` +
+                    `Utilisez skip_policy:true pour forcer.`
+                );
+            }
+        }
+
         session.busy = true;
         session.lastUsed = Date.now();
         session.commandCount++;
         try {
-            return await this._exec(session, command, timeoutSec ?? session.cmdTimeout);
+            return await this._exec(session, command, timeout ?? session.cmdTimeout);
         } finally {
             session.busy = false;
         }
+    }
+
+    /** Retourne les métadonnées minimales d'une session sans exposer la connexion. */
+    getSessionInfo(id) {
+        const s = this.sessions.get(id);
+        if (!s) return null;
+        return { id: s.id, alias: s.alias, closed: s.closed, busy: s.busy };
     }
 
     /**

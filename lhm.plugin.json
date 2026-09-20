@@ -1,7 +1,7 @@
 {
   "identifier": "fkom13-mcp-sftp-orchestrator",
   "name": "MCP SFTP/SSH Orchestrator",
-  "version": "11.3.0",
-  "description": "63 outils SSH/SFTP pour agents IA : multi-host, tmux, tunnels, snapshots, blocklist, allowed_roots, file_edit sécurisé",
+  "version": "11.8.0",
+  "description": "82 outils SSH/SFTP et orchestration infra pour agents IA : multi-host, fichiers hash-safe, tmux, tunnels, snapshots, projets, work sessions, topologie, blocklist et allowed_roots",
   "tags": "ssh,sftp,mcp,devops,server-management,infrastructure"
 }

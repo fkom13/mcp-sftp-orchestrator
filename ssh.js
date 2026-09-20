@@ -5,6 +5,7 @@ import serverManager from './servers.js';
 import sshPool from './sshPool.js';
 import config from './config.js';
 import policies from './policies.js';
+import utils from './utils.js';
 
 const STREAMING_COMMANDS = [
     /^pm2\s+logs?\b/i,
@@ -319,7 +320,7 @@ async function executeWithNewConnection(serverConfig, job, jobId) {
 
         const connectConfig = {
             host: serverConfig.host,
-            port: 22,
+            port: utils.resolveSshPort(serverConfig),
             username: serverConfig.user,
             readyTimeout: 20000
         };
@@ -366,9 +367,22 @@ async function executeCommandSequence(jobId) {
             const stepJob = {
                 ...job,
                 cmd: typeof cmd === 'string' ? cmd : cmd.command,
-                timeout: cmd.timeout || job.timeout,
-                continueOnError: cmd.continueOnError || job.continueOnError
+                timeout: (typeof cmd === 'object' && cmd.timeout != null) ? cmd.timeout : job.timeout,
+                continueOnError: (typeof cmd === 'object' && cmd.continueOnError != null)
+                    ? cmd.continueOnError
+                    : job.continueOnError
             };
+
+            // Policy par étape (sauf skip_policy)
+            if (!job.skip_policy) {
+                const policyCheck = await policies.check(stepJob.cmd);
+                if (policyCheck.blocked) {
+                    throw new Error(
+                        `Étape ${i + 1} bloquée par la politique de sécurité (pattern: "${policyCheck.pattern}"). ` +
+                        `Utilisez skip_policy:true pour forcer.`
+                    );
+                }
+            }
 
             try {
                 queue.log('info', `Exécution étape ${i + 1}/${job.commands.length}: ${stepJob.cmd}`);

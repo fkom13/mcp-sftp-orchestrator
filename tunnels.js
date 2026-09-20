@@ -5,6 +5,8 @@ import config from './config.js';
 import queue from './queue.js';
 import history from './history.js';
 import ssh from './ssh.js';
+import utils from './utils.js';
+import jsonStore from './atomicJsonStore.js';
 
 
 const TUNNELS_PATH = path.join(config.dataDir, 'tunnels.json');
@@ -15,25 +17,36 @@ const DEFAULT_ALLOWLIST = [80, 443, 3000, 8080, 8443, 9090, 3002, 3100, 3102, 45
 const LOCAL_TUNNELS = new Map();
 
 async function loadJson(p, def) {
-    try { await fs.access(p); return JSON.parse(await fs.readFile(p, 'utf-8')); }
-    catch { return def; }
+    return jsonStore.readJson(p, def);
 }
 async function saveJson(p, data) {
-    await fs.writeFile(p, JSON.stringify(data, null, 2));
+    await jsonStore.writeJsonAtomic(p, data);
 }
 
 async function loadAllowlist() {
-    return await loadJson(ALLOWLIST_PATH, DEFAULT_ALLOWLIST);
+    return loadJson(ALLOWLIST_PATH, DEFAULT_ALLOWLIST);
 }
 async function saveAllowlist(list) {
     await saveJson(ALLOWLIST_PATH, list);
 }
 
 async function loadRegistry() {
-    return await loadJson(TUNNELS_PATH, {});
+    return loadJson(TUNNELS_PATH, {});
 }
 async function saveRegistry(reg) {
     await saveJson(TUNNELS_PATH, reg);
+}
+
+const tunnelLocks = new Map();
+async function withTunnelLock(name, fn) {
+    const prev = tunnelLocks.get(name) || Promise.resolve();
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const tail = prev.catch(() => {}).then(() => gate);
+    tunnelLocks.set(name, tail);
+    await prev.catch(() => {});
+    try { return await fn(); }
+    finally { release(); if (tunnelLocks.get(name) === tail) tunnelLocks.delete(name); }
 }
 
 async function getSshTarget(alias, serverManager) {
@@ -67,6 +80,7 @@ function buildArgs(type, listenPort, target, via, remoteKeyPath) {
 
 export default {
     async create(params, serverManager) {
+        return withTunnelLock(params.name, async () => {
         const { name, type, listen_port, target, via, source, key_path } = params;
         if (!name) throw new Error("Le paramètre 'name' est requis.");
         if (!['local', 'remote', 'socks'].includes(type)) throw new Error("type doit être 'local', 'remote' ou 'socks'");
@@ -99,8 +113,8 @@ export default {
         }
 
         const sessionName = `tunnel-${name}`;
-        const sshCmd = 'ssh ' + args.join(' ');
-        const createCmd = `sh -c "tmux new-session -d -s ${sessionName} '${sshCmd}'"`;
+        const sshCmd = ['ssh', ...args].map(utils.escapeShellArg).join(' ');
+        const createCmd = `tmux new-session -d -s ${utils.escapeShellArg(sessionName)} -- sh -lc ${utils.escapeShellArg(sshCmd)}`;
 
         const job = queue.addJob({ type: 'ssh', alias: source, cmd: createCmd, pty: true, timeout: 20, skip_policy: true, status: 'pending' });
         history.logTask(job);
@@ -130,6 +144,12 @@ export default {
             ? `Proxy SOCKS5 sur ${source}:${listen_port} (via ${via})`
             : `${source}:${listen_port} → ${via}:${target}`;
         return `Tunnel '${name}' créé sur ${source} (session tmux: ${sessionName}). ${desc}\n✅ Persistant (survit au redémarrage du MCP).`;
+        });
+    },
+
+    async get(name) {
+        const registry = await loadRegistry();
+        return registry[name] || null;
     },
 
     async list() {
@@ -142,7 +162,7 @@ export default {
                 const local = LOCAL_TUNNELS.get(name);
                 status = local && local.process && !local.process.killed ? 'actif' : 'mort (MCP relancé, relancez le tunnel)';
             } else {
-                const ckJob = queue.addJob({ type: 'ssh', alias: info.source, cmd: `tmux has-session -t ${info.tmux_session} 2>/dev/null && echo actif || echo mort`, timeout: 10, skip_policy: true, streaming: false, status: 'pending' });
+                const ckJob = queue.addJob({ type: 'ssh', alias: info.source, cmd: `tmux has-session -t ${utils.escapeShellArg(info.tmux_session)} 2>/dev/null && echo actif || echo mort`, timeout: 10, skip_policy: true, streaming: false, status: 'pending' });
                 ssh.executeCommand(ckJob.id);
                 await new Promise(r => { const p = () => { const j = queue.getJob(ckJob.id); if (!j || j.status === 'completed' || j.status === 'failed') r(j); else setTimeout(p, 200); }; p(); });
                 const j = queue.getJob(ckJob.id);
@@ -156,6 +176,7 @@ export default {
     },
 
     async close(name, serverManager) {
+        return withTunnelLock(name, async () => {
         const registry = await loadRegistry();
         const info = registry[name];
         if (!info) throw new Error(`Tunnel '${name}' introuvable.`);
@@ -168,13 +189,14 @@ export default {
             }
             LOCAL_TUNNELS.delete(name);
         } else {
-            const killJob = queue.addJob({ type: 'ssh', alias: info.source, cmd: `tmux kill-session -t ${info.tmux_session} 2>/dev/null; echo OK`, timeout: 10, skip_policy: true, streaming: false, status: 'pending' });
+            const killJob = queue.addJob({ type: 'ssh', alias: info.source, cmd: `tmux kill-session -t ${utils.escapeShellArg(info.tmux_session)} 2>/dev/null; echo OK`, timeout: 10, skip_policy: true, streaming: false, status: 'pending' });
             ssh.executeCommand(killJob.id);
         }
 
         delete registry[name];
         await saveRegistry(registry);
         return `Tunnel '${name}' fermé.`;
+        });
     },
 
     async allowlistList() {
@@ -182,17 +204,14 @@ export default {
     },
 
     async allowlistAdd(port) {
-        const list = await loadAllowlist();
-        if (!list.includes(port)) list.push(port);
-        await saveAllowlist(list);
-        return list;
+        return jsonStore.updateJson(ALLOWLIST_PATH, DEFAULT_ALLOWLIST, list => {
+            if (!list.includes(port)) list.push(port);
+            return list;
+        });
     },
 
     async allowlistRemove(port) {
-        const list = await loadAllowlist();
-        const filtered = list.filter(p => p !== port);
-        await saveAllowlist(filtered);
-        return filtered;
+        return jsonStore.updateJson(ALLOWLIST_PATH, DEFAULT_ALLOWLIST, list => list.filter(p => p !== port));
     },
 
     async restore(servers) {

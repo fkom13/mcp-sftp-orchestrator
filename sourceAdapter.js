@@ -1,10 +1,12 @@
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import micromatch from 'micromatch';
 import serverManager from './servers.js';
 import sshPool from './sshPool.js';
 import { z } from 'zod';
+import config from './config.js';
 
 /**
  * sourceAdapter — Abstraction unifiée local/remote.
@@ -148,6 +150,52 @@ function describe(source) {
     };
 }
 
+/**
+ * Politique transversale des chemins locaux.
+ *
+ * Historiquement MCP_ALLOWED_ROOTS n'était vérifié que dans fileOps.js, ce qui
+ * laissait snapshots/transferts contourner la restriction. La validation vit
+ * désormais au niveau sourceAdapter, porte d'entrée commune des accès locaux.
+ *
+ * La vérification combine :
+ *  - contrôle lexical du chemin absolu ;
+ *  - realpath du chemin (ou du parent existant le plus proche) pour empêcher
+ *    un symlink situé dans une racine autorisée de sortir de cette racine.
+ */
+function assertLocalPathAllowed(sourcePath) {
+    if (!config.allowedRoots || config.allowedRoots.length === 0) return;
+    if (!sourcePath || typeof sourcePath !== 'string') {
+        throw new Error("Chemin local invalide.");
+    }
+
+    const requested = path.resolve(sourcePath);
+
+    function realExistingAnchor(p) {
+        let cur = p;
+        while (!fsSync.existsSync(cur)) {
+            const parent = path.dirname(cur);
+            if (parent === cur) break;
+            cur = parent;
+        }
+        try { return fsSync.realpathSync.native(cur); } catch { return path.resolve(cur); }
+    }
+
+    const requestedAnchorReal = realExistingAnchor(requested);
+    const allowed = config.allowedRoots.some((root) => {
+        const rootAbs = path.resolve(root);
+        const lexical = requested === rootAbs || requested.startsWith(rootAbs + path.sep);
+        if (!lexical) return false;
+        const rootReal = realExistingAnchor(rootAbs);
+        return requestedAnchorReal === rootReal || requestedAnchorReal.startsWith(rootReal + path.sep);
+    });
+
+    if (!allowed) {
+        throw new Error(
+            `Accès local refusé : '${requested}' est hors MCP_ALLOWED_ROOTS (${config.allowedRoots.join(', ')}).`
+        );
+    }
+}
+
 // Valide la structure d'une source
 function validateSource(source) {
     if (!source || typeof source !== 'object') {
@@ -162,11 +210,16 @@ function validateSource(source) {
     if (source.type === 'remote' && !source.alias) {
         throw new Error("Source remote invalide : 'alias' est requis quand type='remote'.");
     }
+    if (source.type === 'local') {
+        assertLocalPathAllowed(source.path);
+    }
 }
 
-export { sourceSchema };
+export { sourceSchema, assertLocalPathAllowed };
 
 export default {
+    assertLocalPathAllowed,
+
     /**
      * Décrit une source : { server, type, path, label }.
      * server = 'localhost' ou alias serveur. Utile pour indiquer clairement

@@ -21,6 +21,7 @@ const args = process.argv.slice(2).reduce((acc, arg) => {
 }, {});
 
 const config = {
+    version: '11.8.0',
     dataDir: args['data-dir'] || process.env.MCP_DATA_DIR || path.join(os.homedir(), '.config', 'mcp-orchestrator'),
     
     // Timeouts en millisecondes (plus cohérent)
@@ -37,6 +38,10 @@ const config = {
     
     // Sécurité
     allowedRoots: (process.env.MCP_ALLOWED_ROOTS || '').split(',').map(s => s.trim()).filter(Boolean),
+    // Mode lecture seule : refuse écritures / exec mutantes (exploration safe)
+    readOnly: process.env.MCP_READONLY === 'true' || process.env.MCP_READONLY === '1',
+    // Réponses compactes (moins de tokens agent)
+    compact: process.env.MCP_COMPACT === 'true' || process.env.MCP_COMPACT === '1',
     
     // Configuration Queue
     maxQueueSize: parseInt(process.env.MAX_QUEUE_SIZE || '1000', 10),

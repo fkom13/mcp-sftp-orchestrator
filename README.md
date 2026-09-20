@@ -1,294 +1,273 @@
-# 🚀 MCP Orchestrator — SSH/SFTP Infrastructure Orchestration Server
+# 🚀 MCP Orchestrator — Serveur d'orchestration SSH/SFTP
 
-**Version** : 11.3.0  
+> **v11.8.0 Security Refresh** — Les 82 tools publient désormais les annotations MCP standard. `infra_overview` reste léger sans argument, mais `infra_overview { alias: "..." }` effectue une découverte live et corrèle Nginx/domaines, ports, Docker/Compose et services. Voir `CHANGELOG.md`.
+
+
+**Version** : 11.8.0  
+**Tools** : 82  
 **License** : MIT  
-**Node** : >= 18.0.0
+**Node** : >= 18.0.0  
+**Changelog** : [CHANGELOG.md](./CHANGELOG.md)
 
-A Model Context Protocol (MCP) server that turns any AI agent (Claude, OpenCode, Cursor...) into a full-fledged system administrator. Persistent queue, SSH connection pool, hybrid sync/async execution.
+Serveur MCP (Model Context Protocol, transport **stdio**) qui donne à un agent IA la capacité d’orchestrer un parc de serveurs : SSH, SFTP, édition de fichiers locale/remote (hash-safe), diffs cross-server, shell PTY, snapshots d’infra, notes de protocole, **projets**, **sessions de travail**, inventaire, trust SSH (pubkey), groupes d’alias et audit parc.
 
-### ✨ Key Features
-- **63 MCP tools** — SSH, SFTP, file ops, monitoring, snapshots, tunnels
-- **Built-in security** — Command blocklist, port allowlist, hash protection
-- **Multi-server** — `task_exec {alias:["vps1","vps2"]}` or `alias:"all"}`
-- **Persistence** — tmux + persistent queue = sessions that survive crashes
-- **Snapshots** — Deduplicated versioning of your critical files
-- **SSH Tunnels** — Local, Remote, SOCKS5 with secured port allowlist
-- **AI Guide** — Built-in manual for the agent (section:index/workflows/audit/security)
+---
 
-> **🇫🇷 Version française :** [README.fr.md](README.fr.md)
+## ✨ Points forts (v11.6)
+
+| Domaine | Capacité |
+|---------|----------|
+| **Exécution** | `task_exec` multi-serveur / `group:oci` / dry-run destructif / force |
+| **Fichiers** | `file_read` / `file_edit` (chirurgical) / `file_write` + hash + dryRun + backup |
+| **Parc** | notes, `infra_audit`, `fleet_status`, `server_inventory` |
+| **Projets** | registre local↔remote + `project_diff` |
+| **Travail** | `work_start` → edits → `work_end` (note d’intervention auto) |
+| **Trust** | `ssh_authorize_key` (pubkey only, dry_run par défaut) |
+| **Sécu** | secrets masqués, RO global + **RO par alias**, blocklist, pool SSH robuste |
 
 ---
 
 ## 📦 Installation
 
-### Via npx (recommended)
-```bash
-npx @fkom13/mcp-sftp-orchestrator
-```
-
-### Via git
 ```bash
 git clone https://github.com/fkom13/mcp-sftp-orchestrator.git
-cd mcp-sftp-orchestrator
+cd sftp-mcp   # ou tools/sftp-mcp
 npm install
 cp .env.example .env
-# Edit .env with your paths
+# Éditer MCP_DATA_DIR et chemins de clés
 ```
 
-Requirements: Node.js >= 18.0.0
+Prérequis : **Node.js >= 18**
 
 ---
 
-## ⚙️ Configuration (.env)
+## ⚙️ Configuration (`.env`)
 
-All variables are optional. Defaults are designed for standard usage.
+Toutes les variables sont optionnelles.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MCP_DATA_DIR` | `~/.config/mcp-orchestrator` | Data directory (servers.json, apis.json, queue.json) |
-| `MCP_SYNC_TIMEOUT_S` | `120` | Seconds before background execution |
-| `MCP_DEFAULT_CMD_TIMEOUT_S` | `600` | Default SSH timeout (0 = unlimited) |
-| `MCP_INTERACTIVE_CMD_TIMEOUT_S` | `300` | Interactive command timeout (0 = unlimited) |
-| `MCP_MAX_WAIT_TIMEOUT_S` | `600` | Max timeout for `task_wait` |
-| `MAX_CONNECTIONS_PER_SERVER` | `5` | Max parallel SSH connections per server |
-| `MIN_CONNECTIONS_PER_SERVER` | `1` | Min pooled connections per server |
-| `IDLE_TIMEOUT` | `300000` | Idle connection close delay (ms) |
-| `KEEP_ALIVE_INTERVAL` | `30000` | SSH keepalive interval (ms) |
-| `MAX_QUEUE_SIZE` | `1000` | Max jobs in queue |
-| `SAVE_INTERVAL` | `5000` | Queue disk save interval (ms) |
-| `MCP_ALLOWED_ROOTS` | *(empty)* | Restrict file access to these roots (comma-separated). Empty = full access |
-| `MCP_DEBUG` | `false` | Enable detailed debug logs |
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `MCP_DATA_DIR` | `~/.config/mcp-orchestrator` | Dossier data (JSON, snapshots, projets…) |
+| `MCP_SYNC_TIMEOUT_S` | `120` | Délai (s) avant passage d’une tâche en arrière-plan |
+| `MCP_DEFAULT_CMD_TIMEOUT_S` | `600` | Timeout SSH commande (s). `0` = infini |
+| `MCP_INTERACTIVE_CMD_TIMEOUT_S` | `300` | Timeout interactif (s). `0` = infini |
+| `MCP_MAX_WAIT_TIMEOUT_S` | `600` | Timeout max `task_wait` (s) |
+| `MAX_CONNECTIONS_PER_SERVER` | `5` | Pool SSH max / serveur |
+| `MIN_CONNECTIONS_PER_SERVER` | `1` | Pool SSH min / serveur |
+| `IDLE_TIMEOUT` | `300000` | Fermeture connexion inactive (ms) |
+| `KEEP_ALIVE_INTERVAL` | `30000` | Keepalive SSH (ms) |
+| `MAX_QUEUE_SIZE` | `1000` | Taille max queue jobs |
+| `SAVE_INTERVAL` | `5000` | Autosave queue (ms) |
+| `MCP_ALLOWED_ROOTS` | _(vide)_ | Racines autorisées pour paths locaux (CSV) |
+| `MCP_READONLY` | `false` | `1` = refuse écritures / exec mutantes (global) |
+| `MCP_COMPACT` | `false` | `1` = réponses tronquées (tokens agent) |
+| `MCP_DEBUG` | `false` | Logs détaillés stderr |
+
+### Fichiers sous `MCP_DATA_DIR`
+
+| Fichier | Contenu |
+|---------|---------|
+| `servers.json` | Alias SSH (`host`, `user`, `keyPath`/`password`, `port?`, `readonly?`) |
+| `apis.json` | Catalogue APIs (secrets masqués en lecture tools) |
+| `queue.json` / `queue.backup.json` | Jobs |
+| `history.json` | Historique tâches |
+| `server_notes.json` | Protocoles / notes par serveur |
+| `server_groups.json` | Groupes d’alias |
+| `projects.json` | Registre projets |
+| `work_sessions.json` | Sessions de travail |
+| `policies.json` | Blocklist commandes |
+| `tunnels.json` / `tunnel_allowlist.json` | Tunnels SSH |
+| `infra_snapshots/` | Snapshots content-addressable |
 
 ---
 
-## 🔌 MCP Client Configuration (OpenCode, Claude Desktop, etc.)
+## 🔌 Connexion client MCP
+
+### Grok / config.toml
+
+```toml
+[mcp_servers.orchestrator]
+command = "node"
+args = ["/chemin/absolu/sftp-mcp/server.js"]
+# optionnel:
+# env = { MCP_DATA_DIR = "/chemin/absolu/sftp-mcp/data" }
+```
+
+### OpenCode / Claude Desktop (JSON)
 
 ```json
 {
   "mcpServers": {
     "orchestrator": {
       "command": "node",
-      "args": ["/path/to/sftp-mcp/server.js"],
+      "args": ["/chemin/absolu/sftp-mcp/server.js"],
       "env": {
-        "MCP_DATA_DIR": "/path/to/sftp-mcp/data"
+        "MCP_DATA_DIR": "/chemin/absolu/sftp-mcp/data"
       }
     }
   }
 }
 ```
 
----
-
-## 🧰 Tool Reference (63 tools)
-
-### Help & Diagnostics
-| Tool | Description |
-|------|-------------|
-| `help` | Complete guide: tools, env vars, parameter schemas |
-| `guide` | AI manual: workflows, cheatsheet, audit, security |
-| `system_diagnostics` | Full system diagnostic (queue, pool, servers, APIs) |
-
-### Server Management
-| Tool | Description |
-|------|-------------|
-| `server_add` | Add/update a server alias |
-| `server_list` | List all configured servers |
-| `server_remove` | Remove a server alias |
-| `infra_overview` | Fleet-wide overview (roles, services, warnings) |
-| `server_note_set/get/list/remove` | Documented server context |
-
-### Security (Blocklist)
-| Tool | Description |
-|------|-------------|
-| `policy_blocklist_list` | List blocked commands |
-| `policy_blocklist_add` | Add a pattern to blocklist |
-| `policy_blocklist_remove` | Remove a pattern from blocklist |
-
-### Task Execution
-| Tool | Description |
-|------|-------------|
-| `task_exec` | SSH one-shot. Supports `alias:["vps1","vps2"]` or `alias:"all"` |
-| `task_exec_interactive` | SSH with interactive prompt handling |
-| `task_exec_sequence` | Sequential SSH commands |
-| `task_transfer` | SFTP transfer. Supports `server_to_server` |
-| `task_transfer_multi` | Bulk transfers with glob patterns |
-
-### Monitoring
-| Tool | Description |
-|------|-------------|
-| `get_system_resources` | CPU, RAM, Disk metrics |
-| `get_services_status` | systemd, Docker, PM2 status (graceful fallback) |
-| `get_fail2ban_status` | Fail2Ban status |
-| `check_api_health` | HTTP health check |
-
-### Logs
-| Tool | Description |
-|------|-------------|
-| `get_pm2_logs` | PM2 logs |
-| `get_docker_logs` | Docker logs |
-| `tail_file` | Tail a remote file |
-
-### File Operations (Local + Remote)
-| Tool | Description |
-|------|-------------|
-| `file_read` | Read file + SHA-256 hash (edit protection) |
-| `file_write` | Create/overwrite with `dryRun` and `backup` |
-| `file_edit` | Surgical or full edit + hash protection |
-
-### Comparison & Drift Detection
-| Tool | Description |
-|------|-------------|
-| `diff_files` | Compare 2 files (local/remote, cross-server) |
-| `diff_folders` | Compare 2 directories |
-| `compare_all_sources` | Detect drifts across N servers |
-
-### Persistent Shell Sessions
-| Tool | Description |
-|------|-------------|
-| `shell_create` | Open a persistent shell (cd/env preserved) |
-| `shell_exec` | Execute in an existing session |
-| `shell_list` / `shell_close` | List/close sessions |
-
-### tmux (Surviving Terminal Sessions)
-| Tool | Description |
-|------|-------------|
-| `tmux_create` | Create a persistent tmux session |
-| `tmux_exec` | Send a command to a session |
-| `tmux_read` | Read session buffer |
-| `tmux_list` / `tmux_kill` | List/kill sessions |
-
-### SSH Tunnels
-| Tool | Description |
-|------|-------------|
-| `tunnel_create` | Local/remote/SOCKS5 tunnel, persistent via tmux |
-| `tunnel_list` | List active tunnels |
-| `tunnel_close` | Close a tunnel |
-| `tunnel_allowlist_add/remove` | Manage allowed ports |
-
-### Snapshots (File Versioning)
-| Tool | Description |
-|------|-------------|
-| `snapshot_create` | Capture file state with deduplication |
-| `snapshot_list` | List snapshots |
-| `snapshot_diff` | Compare 2 snapshots |
-| `snapshot_restore` | Restore (dryRun by default) |
-| `snapshot_delete` | Delete + orphan cleanup |
-
-### Queue & Monitoring
-| Tool | Description |
-|------|-------------|
-| `task_queue` | View all active/pending tasks |
-| `task_status` | Task detail by ID |
-| `task_history` | Filterable history |
-| `task_retry` | Retry a failed task |
-| `task_wait` | Wait for a background task |
-| `task_logs` | MCP internal logs |
-| `queue_stats` / `pool_stats` | Queue and SSH pool stats |
-
-### API Catalog
-| Tool | Description |
-|------|-------------|
-| `api_add` / `api_list` / `api_remove` | API monitoring catalog |
-| `api_check` | Health check via SSH + curl |
+Après modification du code : recharger le serveur MCP (`/mcps` → `r` ou restart session). Vérifier `system_diagnostics` → `version: "11.8.0"`.
 
 ---
 
-## 📖 Usage Examples
+## 🧰 Référence des outils (82)
 
-### Multi-server
-```bash
-# One command, multiple servers
-task_exec {alias:["vps1","vps2","vps3"], cmd:"uptime"}
+### Diagnostic & audit
+| Outil | Description |
+|-------|-------------|
+| `help` | Guide outils + .env + astuces |
+| `guide` | Manuel IA (workflows, cheatsheet, pitfalls, audit, security) |
+| `system_diagnostics` | Queue, pool, serveurs/APIs **masqués**, version, readOnly |
+| `infra_audit` | Synthèse parc + projets + notes + crashed |
+| `infra_overview` | Serveurs + notes (vue légère) |
+| `fleet_status` | Ping SSH parallèle (latence, load, disk) |
+| `server_inventory` | Inventaire léger (pm2/docker/disk/home, cache 10 min) |
 
-# Entire fleet
-task_exec {alias:"all", cmd:"df -h /"}
+### Serveurs & groupes
+| Outil | Description |
+|-------|-------------|
+| `server_add` | CRUD alias (`keyPath` ou `password`, `port`, **`readonly`**) |
+| `server_list` | Liste (passwords masqués) |
+| `server_remove` | Supprime un alias |
+| `server_group_list/set/remove` | Groupes (`oci`, `contabo`…). Usage : `group:oci` ou nom de groupe |
+
+### Projets (v11.6)
+| Outil | Description |
+|-------|-------------|
+| `project_list` / `project_get` / `project_set` / `project_remove` | Registre |
+| `project_resolve` | → `{ local, remote, ignore, runtime }` |
+| `project_diff` | Diff local↔remote du projet |
+
+Exemple `project_set` :
+
+```json
+{
+  "name": "p-image",
+  "local": { "path": "/home/.../dev-serveur/p-image" },
+  "servers": {
+    "prod": {
+      "alias": "fkomprodmini2_prod",
+      "path": "/home/ubuntu/p-image",
+      "runtime": { "pm2": "p-image", "port": 5002 },
+      "url": "https://pruna.esprit-artificiel.com"
+    }
+  },
+  "ignore": ["node_modules", ".git", "data"]
+}
 ```
 
-### SOCKS5 Proxy Tunnel
-```bash
-tunnel_create {name:"proxy", type:"socks", listen_port:1080, via:"vps_paris"}
-# → Browser → SOCKS5 127.0.0.1:1080 → Paris VPS
+### Sessions de travail (v11.6)
+| Outil | Description |
+|-------|-------------|
+| `work_start` | Ouvre un journal (`alias`, `project`, `tag`, snapshot optionnel) |
+| `work_log` | Event (`file_edit`, `task_exec`, …) |
+| `work_list` | Sessions actives (+ historique) |
+| `work_end` | Clôture + `server_note` `last_intervention` |
+
+### Trust SSH (v11.6)
+| Outil | Description |
+|-------|-------------|
+| `ssh_authorize_key` | Ajoute une **pubkey** dans `authorized_keys` distant. `dry_run` défaut. Sources : `string` \| `local_path` \| `alias` |
+
+```json
+{
+  "target_alias": "fkomprodmini1_prod",
+  "source": { "type": "alias", "alias": "vps_contabo" },
+  "comment": "fleet-from-contabo",
+  "dry_run": true
+}
 ```
 
-### Local Tunnel (access remote service)
-```bash
-tunnel_create {name:"crm", type:"local", listen_port:8080, target:"127.0.0.1:3100", via:"vps_prod"}
-# → http://localhost:8080 → production CRM
-```
+### Policies
+| Outil | Description |
+|-------|-------------|
+| `policy_blocklist_list/add/remove` | Blocklist commandes (aussi appliquée à shell + sequences) |
 
-### Remote Tunnel (expose local service)
-```bash
-tunnel_create {name:"dev", type:"remote", listen_port:9090, target:"127.0.0.1:3000", via:"vps", source:"vps_prod", key_path:"/home/user/.ssh/vps.key"}
-# → vps_prod:9090 → your local machine:3000
-```
+### Catalogue API
+| Outil | Description |
+|-------|-------------|
+| `api_add` / `api_list` / `api_remove` / `api_check` | Monitoring (clés masquées en list) |
 
-### Persistent tmux Session
-```bash
-tmux_create {alias:"vps", name:"build", start_cmd:"npm run build"}
-tmux_read {alias:"vps", session:"build"}
-tmux_kill {alias:"vps", session:"build"}
-```
+### Exécution de tâches
+| Outil | Description |
+|-------|-------------|
+| `task_exec` | SSH ; alias \| tableau \| `all` \| `group:x` ; dry_run/force destructif |
+| `task_exec_interactive` | Prompts yes/no, menus |
+| `task_exec_sequence` | Séquence sur un serveur (policy par étape) |
+| `task_transfer` | SFTP upload/download/`server_to_server` |
+| `task_transfer_multi` | Multi + globs |
 
-### Security Blocklist
-```bash
-# List blocked commands
-policy_blocklist_list
-# → ["rm -rf /", "mkfs*", ...]
+### Files / Diff / Shell / Snapshots
+| Famille | Outils |
+|---------|--------|
+| Files | `file_read`, `file_write`, `file_edit` |
+| Diff | `diff_files`, `diff_folders`, `compare_all_sources` |
+| Shell | `shell_create`, `shell_exec` (+ `skip_policy`), `shell_list`, `shell_close` |
+| Snapshots | `snapshot_create/list/diff/restore/delete` |
 
-# Conscious bypass
-task_exec {alias:"vps", cmd:"rm -rf /tmp/cache", skip_policy:true}
-```
+**Édition safe** : `file_read` → hash → `file_edit` + `expectedHash` (+ `dryRun` / `backup`).
 
-### Secure File Editing
-```bash
-# Read + hash
-file_read {source:{type:"remote", alias:"vps", path:"/etc/nginx/nginx.conf"}}
-# → content + hash
+### Notes serveur
+| Outil | Description |
+|-------|-------------|
+| `server_note_set/get/list/remove` | Protocole (description, services, warnings, intervention) |
 
-# Edit with protection
-file_edit {source:{type:"remote", alias:"vps", path:"/etc/nginx/nginx.conf"},
-           oldString:"worker_connections 768;",
-           newString:"worker_connections 1024;",
-           expectedHash:"abc123...",
-           backup:true}
+### Monitoring & logs
+| Outil | Description |
+|-------|-------------|
+| `get_system_resources` | CPU / RAM / disque |
+| `get_services_status` | systemd / Docker / PM2 |
+| `get_fail2ban_status` | Fail2Ban |
+| `check_api_health` | HTTP via SSH+curl |
+| `get_pm2_logs` / `get_docker_logs` / `tail_file` | Logs |
 
-# Preview without writing
-file_edit {source:{type:"remote", alias:"vps", path:"/etc/nginx/nginx.conf"},
-           oldString:"worker_connections 768;",
-           newString:"worker_connections 1024;",
-           dryRun:true}
-```
+### Queue
+| Outil | Description |
+|-------|-------------|
+| `task_queue` / `task_status` / `task_history` / `task_wait` / `task_logs` | Suivi |
+| `task_retry` / `task_retry_all` | Relance |
+| `task_purge` | Purge (dry_run défaut) |
+| `queue_stats` / `pool_stats` | Stats |
 
-### Snapshot Before Risky Changes
-```bash
-# Before
-snapshot_create {source:{type:"remote", alias:"vps"}, paths:["/etc/nginx/"], tag:"before-fix"}
-
-# After if something broke
-snapshot_restore {snapshotId:"...", target:{type:"remote", alias:"vps"}, dryRun:false, force:true}
-```
-
-### Multi-server Drift Detection
-```bash
-compare_all_sources {sources:[
-  {type:"remote", alias:"vps1", path:"/etc/nginx/nginx.conf", label:"prod"},
-  {type:"remote", alias:"vps2", path:"/etc/nginx/nginx.conf", label:"staging"}
-]}
-```
+### Tmux & tunnels
+| Outil | Description |
+|-------|-------------|
+| `tmux_create/exec/read/list/kill` | Sessions tmux distantes |
+| `tunnel_create/list/close` | Tunnels SSH local/remote/socks |
+| `tunnel_allowlist_add/remove` | Ports autorisés pour tunnels |
 
 ---
 
-## 📚 AI Built-in Manual (guide)
+## 📖 Workflows agent recommandés
 
-The orchestrator includes an interactive manual for your AI agent:
+### Début de session
+```
+infra_audit  (ou infra_overview)
+fleet_status
+project_list / project_resolve
+```
 
-```bash
-guide section:index       # Table of contents
-guide section:workflows   # Copy-paste recipes
-guide section:cheatsheet  # Tool → usage table
-guide section:audit       # Full fleet audit in 8 steps
-guide section:security    # Blocklist + tunnels
-guide section:pitfalls    # Common mistakes
+### Chantier sur un projet
+```
+work_start { project: "p-image", alias: "fkomprodmini2_prod", tag: "fix-x", message: "…" }
+file_read → file_edit (expectedHash, dryRun puis apply)
+work_log { type: "file_edit", path: "…" }
+work_end { summary: "…" }   → note serveur mise à jour
+project_diff { name: "p-image" }
+```
+
+### Commandes longues
+```
+task_exec { timeout: 0, … }  → si > syncTimeout → task_wait { id }
+```
+
+### Cibles multi-serveurs
+```
+task_exec { alias: "group:oci", cmd: "hostname" }
+task_exec { alias: "all", cmd: "uptime" }
 ```
 
 ---
@@ -296,79 +275,82 @@ guide section:pitfalls    # Common mistakes
 ## 🏗️ Architecture
 
 ```
-MCP Client (stdio)
+Client MCP (stdio)
     │
-server.js ─── 63 MCP tools registered
+server.js ─── 82 tools
     │
-    ├── queue.js ─────── Persistent job queue (JSON + backup)
-    ├── ssh.js ───────── SSH execution (pool + dedicated connections)
-    ├── sftp.js ──────── SFTP transfers (upload/download/multi)
-    ├── sshPool.js ───── Persistent SSH connection pool
-    ├── servers.js ───── CRUD server aliases
-    ├── apis.js ──────── CRUD API catalog
-    ├── history.js ───── Task history
-    ├── config.js ────── Centralized configuration
-    ├── utils.js ─────── Utilities (escapeShellArg)
-    ├── fileOps.js ───── File operations (read/write/edit)
-    ├── diffEngine.js ── Diff engine (files/dirs/sources)
-    ├── compareEngine.js ─ Multi-source comparison
-    ├── diffFormatter.js ─ Diff formatting
-    ├── sourceAdapter.js ─ Local/remote abstraction
-    ├── shellSessions.js ─ Persistent shell sessions
-    ├── snapshotManager.js ─ Versioned snapshots
-    ├── notes.js ──────── Documented server context
-    ├── policies.js ──── Command blocklist
-    ├── tunnels.js ────── SSH tunnels (local/remote/SOCKS)
-    ├── guide.js ──────── AI built-in manual
-    └── diagnose.js ───── Diagnostics
+    ├── queue.js          File d’attente persistante + purge/retry
+    ├── ssh.js / sshPool  Exécution + pool (retry safe, port configurable)
+    ├── sftp.js           Transferts (server_to_server via sourceAdapter/pool)
+    ├── sourceAdapter.js  Local fs | remote SFTP pool
+    ├── fileOps.js        Read/write/edit + hash + dryRun + backup
+    ├── diffEngine.js / compareEngine.js / diffFormatter.js
+    ├── shellSessions.js  PTY persistants + policy
+    ├── snapshotManager.js
+    ├── projects.js / workSession.js / inventory.js / groups.js / fleet.js
+    ├── sshTrust.js       authorized_keys (pubkey only)
+    ├── servers.js / apis.js / notes.js / policies.js / tunnels.js
+    ├── history.js / guide.js / config.js / utils.js
 ```
 
-### Job Lifecycle
+### Cycle de vie d’un job
 
 ```
-pending → running → completed / failed
-                      ↓ (on restart)
-                    crashed → retry → pending
+pending → running → completed | failed | partial
+                      ↓ (redémarrage MCP pendant running)
+                    crashed → task_retry → pending
 ```
 
 ---
 
-## 🔒 Security
+## 🔒 Sécurité
 
-- **Command Blocklist** : `rm -rf /`, `mkfs*`, fork bombs, and other destructive commands are blocked by default
-- **Conscious bypass** : `skip_policy: true` to force execution
-- **Tunnel port allowlist** : only explicitly allowed ports can be used
-- **File access restriction** : `MCP_ALLOWED_ROOTS` env var to limit file operations to specific directories
-- **`escapeShellArg()`** : all URLs and paths are escaped before being passed to curl/shell
-- **Plaintext secret detection** : warning on startup if passwords/API keys are in plaintext
-- **Pre-modification snapshots** : `backup:true` on file_edit/file_write for instant rollback
-- **Recommendation** : use SSH keys (not passwords), store secrets in Vaultwarden
+| Mécanisme | Détail |
+|-----------|--------|
+| Secrets | Masqués en `api_list` / diagnostics (`***` + 4 derniers car.) |
+| Shell escape | `escapeShellArg` sur curl, logs, chemins |
+| Blocklist | `policies.json` ; shell + sequence inclus ; `skip_policy` pour forcer |
+| RO global | `MCP_READONLY=1` |
+| RO alias | `"readonly": true` dans `servers.json` |
+| Destructif | `task_exec` dry-run si pattern dangereux sans `force:true` |
+| Trust | Pubkey only ; dry_run par défaut |
+| Clés | Préférer `keyPath` SSH ; Vaultwarden pour secrets API |
 
 ---
 
 ## 🧪 Tests
 
 ```bash
-node diagnose.js        # Full diagnostic
-node test_mcp.js        # MCP smoke test
-node test_features.js   # Unit tests (queue, pool, glob, prompts, crash)
+npm test:unit    # p0 + p1 + p16 (43 tests)
+npm test         # unit + smoke MCP + features
+node diagnose.js # diagnostic local optionnel
 ```
 
----
-
-## 🛣️ Roadmap
-
-| Version | Changes |
-|---------|---------|
-| 10.0.0 | New tools: file_read/write/edit, diff, snapshots, shell, notes |
-| 10.4.0 | server_to_server, help with schemas, audit guide |
-| 11.0.0 | Command Blocklist, Multi-host (`alias:"all"`), tmux |
-| 11.2.0 | SSH Tunnels (local/remote/SOCKS5), allowlist, ssh2 stderr fix |
-| 11.3.0 | AllowedRoots (`MCP_ALLOWED_ROOTS`) for file restriction |
-| 12.0.0 (planned) | Auto key setup for tunnels, webhooks, static dashboard |
+| Fichier | Couverture |
+|---------|------------|
+| `test_p0_unit.js` | utils, policies, redact, timeouts, version |
+| `test_p1_unit.js` | groups, purge, destructive, RO env |
+| `test_p16_unit.js` | projects, work session, compact, sshTrust |
+| `test_mcp.js` | smoke SDK |
+| `test_features.js` | queue / pool / globs / prompts |
 
 ---
 
-## 📄 License
+## 🛣️ Versions récentes
+
+| Version | Contenu | Snapshot gencodedoc |
+|---------|---------|---------------------|
+| **11.6.1** | Hardening multi-agent: RO transversal, server-to-server dossiers/force, allowed roots anti-symlink, quoting shell/tmux, queue + JSON stores atomiques | — |
+| **11.6.0** | Projets, work sessions, inventory, ssh_authorize_key, RO alias, compact | **#23** (final docs) |
+| 11.4.0 | fleet, infra_audit, groups, retry_all, purge, pool rewrite | #21 |
+| 11.3.0 | Secrets mask, policy shell/seq, port SSH, wait partial | #20 |
+| 10.4–10.0 | file ops, diff, shell, snapshots, notes, guide | #17–19 |
+| 9.x / 8.x | SFTP force, timeouts, interactif, sécu de base | — |
+
+Détail : **[CHANGELOG.md](./CHANGELOG.md)** · plans historiques : `ROADMAP.md`, `ROADMAP_EXTENDED.md`.
+
+---
+
+## 📄 Licence
 
 MIT — Copyright (c) 2025-2026 Franck (fkom13)

@@ -1,49 +1,35 @@
-import fs from 'fs/promises';
 import path from 'path';
 import config from './config.js';
+import jsonStore from './atomicJsonStore.js';
+
 const SERVERS_FILE_PATH = path.join(config.dataDir, 'servers.json');
+const EMPTY = {};
 
 async function readServers() {
-    try {
-        await fs.access(SERVERS_FILE_PATH);
-        const data = await fs.readFile(SERVERS_FILE_PATH, 'utf-8');
-        return JSON.parse(data);
-    } catch (error) {
-        // Si le fichier n'existe pas, on retourne un objet vide
-        return {};
-    }
+    return jsonStore.readJson(SERVERS_FILE_PATH, EMPTY);
 }
 
-async function writeServers(servers) {
-    await fs.writeFile(SERVERS_FILE_PATH, JSON.stringify(servers, null, 2));
-}
-
-async function addServer(alias, config) {
-    const servers = await readServers();
-    if (servers[alias]) {
-        // L'alias existe, on le met à jour
-        servers[alias] = { ...servers[alias], ...config };
-        await writeServers(servers);
-        return { success: true, message: `Serveur '${alias}' mis à jour avec succès.` };
-    }
-    // L'alias n'existe pas, on le crée
-    servers[alias] = config;
-    await writeServers(servers);
-    return { success: true, message: `Serveur '${alias}' ajouté avec succès.` };
+async function addServer(alias, serverConfig) {
+    let existed = false;
+    await jsonStore.updateJson(SERVERS_FILE_PATH, EMPTY, (servers) => {
+        existed = !!servers[alias];
+        servers[alias] = existed ? { ...servers[alias], ...serverConfig } : serverConfig;
+        return servers;
+    });
+    return { success: true, message: `Serveur '${alias}' ${existed ? 'mis à jour' : 'ajouté'} avec succès.` };
 }
 
 async function removeServer(alias) {
-    const servers = await readServers();
-    if (!servers[alias]) {
-        throw new Error(`L'alias '${alias}' n'existe pas.`);
-    }
-    delete servers[alias];
-    await writeServers(servers);
+    await jsonStore.updateJson(SERVERS_FILE_PATH, EMPTY, (servers) => {
+        if (!servers[alias]) throw new Error(`L'alias '${alias}' n'existe pas.`);
+        delete servers[alias];
+        return servers;
+    });
     return { success: true, message: `Serveur '${alias}' supprimé.` };
 }
 
 async function listServers() {
-    return await readServers();
+    return readServers();
 }
 
 async function getServer(alias) {
@@ -55,4 +41,15 @@ async function getServer(alias) {
     return serverConfig;
 }
 
-export default { addServer, removeServer, listServers, getServer };
+/** true si l'alias est marqué readonly:true dans servers.json */
+async function isAliasReadOnly(alias) {
+    if (!alias) return false;
+    try {
+        const sc = await getServer(alias);
+        return sc.readonly === true || sc.readOnly === true;
+    } catch {
+        return false;
+    }
+}
+
+export default { addServer, removeServer, listServers, getServer, isAliasReadOnly };

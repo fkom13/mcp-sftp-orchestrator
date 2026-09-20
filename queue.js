@@ -5,8 +5,8 @@ import config from './config.js';
 
 const QUEUE_FILE = path.join(config.dataDir, 'queue.json');
 const QUEUE_BACKUP = path.join(config.dataDir, 'queue.backup.json');
-const SAVE_INTERVAL = 5000;
-const MAX_QUEUE_SIZE = 1000;
+const SAVE_INTERVAL = config.saveInterval || 5000;
+const MAX_QUEUE_SIZE = config.maxQueueSize || 1000;
 
 // ✅ Mode silencieux par défaut (logs désactivés sauf si MCP_DEBUG=true)
 const SILENT_MODE = process.env.MCP_DEBUG !== 'true';
@@ -17,6 +17,12 @@ const MAX_LOGS = 500;
 
 let saveTimer = null;
 let isDirty = false;
+let dirtyRevision = 0;
+
+function markDirty() {
+    isDirty = true;
+    dirtyRevision++;
+}
 
 // Charger la queue au démarrage
 async function loadQueue() {
@@ -63,11 +69,17 @@ let saveLock = null;
 async function saveQueue() {
     if (!isDirty) return;
 
-    // Attendre le verrou précédent
-    if (saveLock) await saveLock;
+    // Attendre le save précédent puis revalider : il a peut-être déjà persisté
+    // toutes les mutations connues au moment de cet appel.
+    if (saveLock) {
+        await saveLock;
+        if (!isDirty) return;
+    }
 
     saveLock = (async () => {
         isSaving = true;
+        let tmpPath = null;
+        const revisionAtStart = dirtyRevision;
         try {
             try {
                 await fs.copyFile(QUEUE_FILE, QUEUE_BACKUP);
@@ -88,14 +100,19 @@ async function saveQueue() {
                 }
             }
 
-            await fs.writeFile(
-                QUEUE_FILE,
-                JSON.stringify(filteredQueue, null, 2)
-            );
+            // Écriture atomique : un crash ne peut plus laisser queue.json tronqué.
+            tmpPath = `${QUEUE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+            await fs.writeFile(tmpPath, JSON.stringify(filteredQueue, null, 2));
+            await fs.rename(tmpPath, QUEUE_FILE);
+            tmpPath = null;
 
-            isDirty = false;
-            log('debug', `Queue sauvegardée (${Object.keys(filteredQueue).length} tâches)`);
+            // Une mutation a pu arriver pendant les awaits ci-dessus. Ne jamais
+            // effacer son dirty flag : le prochain tick la persistera.
+            isDirty = dirtyRevision !== revisionAtStart;
+            log('debug', `Queue sauvegardée (${Object.keys(filteredQueue).length} tâches, dirty=${isDirty})`);
         } catch (err) {
+            isDirty = true;
+            if (tmpPath) await fs.rm(tmpPath, { force: true }).catch(() => {});
             log('error', `Erreur lors de la sauvegarde de la queue: ${err.message}`);
         } finally {
             isSaving = false;
@@ -166,7 +183,7 @@ function addJob(details) {
     }
 
     jobQueue[id] = job;
-    isDirty = true;
+    markDirty();
     log('info', `Nouvelle tâche ${id} (${job.type}) ajoutée.`);
     return jobQueue[id];
 }
@@ -192,7 +209,7 @@ function updateJobStatus(id, status, data = {}) {
             log('info', `Tâche ${id}: ${oldStatus} -> ${status}`);
         }
 
-        isDirty = true;
+        markDirty();
     }
 }
 
@@ -250,7 +267,7 @@ function cleanOldJobs() {
 
     if (toDelete.length > 0) {
         log('info', `${toDelete.length} vieilles tâches supprimées de la queue`);
-        isDirty = true;
+        markDirty();
     }
 }
 
@@ -285,7 +302,7 @@ async function retryJob(id) {
     delete newJob.completedAt;
 
     jobQueue[newJob.id] = newJob;
-    isDirty = true;
+    markDirty();
 
     log('info', `Tâche ${id} réessayée -> nouvelle tâche ${newJob.id} (tentative ${newJob.retryCount}/${newJob.maxRetries})`);
 
@@ -298,6 +315,56 @@ function getCrashedJobs() {
         job.canRetry &&
         job.retryCount < job.maxRetries
     );
+}
+
+function getRetryableJobs(statusFilter = null) {
+    return Object.values(jobQueue).filter(job => {
+        if (!['failed', 'crashed'].includes(job.status)) return false;
+        if (statusFilter && job.status !== statusFilter) return false;
+        if ((job.retryCount || 0) >= (job.maxRetries || 3)) return false;
+        return true;
+    });
+}
+
+/**
+ * Purge des jobs terminés/crashés.
+ * options = { status?: 'crashed'|'failed'|'completed'|'all_terminal', olderThanDays?: number, dryRun?: bool }
+ */
+function purgeJobs(options = {}) {
+    const olderThanDays = options.olderThanDays ?? 0;
+    const dryRun = options.dryRun === true;
+    const status = options.status || 'crashed';
+    const now = Date.now();
+    const maxAge = olderThanDays > 0 ? olderThanDays * 86400000 : 0;
+
+    const terminal = new Set(['completed', 'failed', 'crashed', 'partial']);
+    const toDelete = [];
+
+    for (const [id, job] of Object.entries(jobQueue)) {
+        let match = false;
+        if (status === 'all_terminal') {
+            match = terminal.has(job.status);
+        } else {
+            match = job.status === status;
+        }
+        if (!match) continue;
+
+        if (maxAge > 0) {
+            const created = job.createdAt ? new Date(job.createdAt).getTime() : now;
+            if (now - created < maxAge) continue;
+        }
+        toDelete.push(id);
+    }
+
+    if (!dryRun) {
+        for (const id of toDelete) delete jobQueue[id];
+        if (toDelete.length) {
+            markDirty();
+            log('info', `Purge: ${toDelete.length} tâche(s) supprimée(s) (status=${status})`);
+        }
+    }
+
+    return { purged: toDelete.length, ids: toDelete, dryRun };
 }
 
 function getStats() {
@@ -355,6 +422,8 @@ export default {
     log,
     retryJob,
     getCrashedJobs,
+    getRetryableJobs,
+    purgeJobs,
     getStats,
     cleanOldJobs,
     saveQueue,

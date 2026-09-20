@@ -1,0 +1,26 @@
+# Local/runtime state — never publish
+.env
+data/
+.gencodedoc/
+.gencodedoc.yaml
+*.log
+*.bak
+*.bak.*
+*.tmp
+
+# Local MCP registry/auth metadata
+.mcpregistry_*
+server.json
+
+# Generated/local project intelligence
+sftp-mcp_tree_code.md
+ANALYSE_COMPLETE.md
+bilan_bug.md
+incoherence_readme.md
+
+# Development-only tests/docs
+test*.js
+ROADMAP*.md
+coverage/
+node_modules/
+*.tgz

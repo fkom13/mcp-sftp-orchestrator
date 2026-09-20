@@ -22,7 +22,15 @@ import notes from './notes.js';
 import guide from './guide.js';
 import policies from './policies.js';
 import tunnels from './tunnels.js';
+import fleet from './fleet.js';
+import groups from './groups.js';
+import projects from './projects.js';
+import workSession from './workSession.js';
+import inventory from './inventory.js';
+import sshTrust from './sshTrust.js';
 import { sourceSchema } from './sourceAdapter.js';
+import infraTopology from './infraTopology.js';
+import { enhanceToolConfig } from './toolMetadata.js';
 
 if (DEBUG) {
     console.error("✅ Tous les modules importés");
@@ -33,27 +41,88 @@ await queue.init();
 
 if (DEBUG) console.error("✅ Queue initialisée");
 
+if (config.readOnly) {
+    console.error("[INFO] MCP_READONLY actif — écritures / exec mutantes refusées.");
+}
+if (config.compact) {
+    console.error("[INFO] MCP_COMPACT actif — réponses tronquées.");
+}
+
 // Vérification des secrets en clair
 try {
     const serverList = await servers.listServers();
-    for (const [alias, config] of Object.entries(serverList)) {
-        if (config.password) {
+    for (const [alias, sc] of Object.entries(serverList)) {
+        if (sc.password) {
             console.error(`[SECURITY WARN] Mot de passe en clair détecté pour le serveur '${alias}'. Utilisez une clé SSH ou Vaultwarden.`);
         }
     }
     const apiList = await apis.listApis();
-    for (const [alias, config] of Object.entries(apiList)) {
-        if (config.api_key || config.htpasswd_pass) {
+    for (const [alias, ac] of Object.entries(apiList)) {
+        if (ac.api_key || ac.htpasswd_pass) {
             console.error(`[SECURITY WARN] Secret en clair détecté pour l'API '${alias}'. Utilisez Vaultwarden.`);
         }
     }
 } catch (e) { /* silencieux, pas bloquant */ }
 
+const ORCH_VERSION = config.version || '11.8.0';
+
 const server = new McpServer({
     name: "orchestrator",
-    version: "11.3.0",
-    description: "Serveur pour l'orchestration de tâches distantes avec exécution hybride et configuration flexible."
+    version: ORCH_VERSION,
+    description: "IACA Resource / Execution Orchestrator : machines, SSH, fichiers, jobs, transferts, terminaux, snapshots et topologie d'infrastructure."
 });
+
+// Enrichit les 82 tools avec les hints MCP standard et des descriptions de
+// sélection sans dupliquer cette logique dans chaque registerTool. Les hints
+// n'accordent aucun droit : les guards/policies serveur restent l'autorité.
+const nativeRegisterTool = server.registerTool.bind(server);
+server.registerTool = (name, toolConfig, handler) =>
+    nativeRegisterTool(name, enhanceToolConfig(name, toolConfig), handler);
+
+/** Refuse si MCP_READONLY global. */
+function guardWritable(actionLabel) {
+    if (config.readOnly) {
+        utils.assertWritable(actionLabel);
+    }
+}
+
+/** Refuse si alias marqué readonly:true dans servers.json (ou global). */
+async function guardAliasWritable(alias, actionLabel) {
+    guardWritable(actionLabel);
+    if (alias && await servers.isAliasReadOnly(alias)) {
+        throw new Error(
+            `Alias '${alias}' est en lecture seule (servers.json readonly:true). ` +
+            `${actionLabel} refusé.`
+        );
+    }
+}
+
+/** Applique la politique d'écriture aux transferts selon leur direction. */
+async function guardTransferWritable(params, actionLabel) {
+    guardWritable(actionLabel);
+    // upload et server_to_server écrivent sur l'alias cible.
+    if (params.direction === 'upload' || params.direction === 'server_to_server') {
+        await guardAliasWritable(params.alias, actionLabel);
+    }
+    // download ne modifie pas le serveur distant, seulement le filesystem local ;
+    // le guard global ci-dessus suffit.
+}
+
+/** Empêche task_retry de contourner readonly:true d'un alias. */
+async function guardRetryJobWritable(job, actionLabel) {
+    guardWritable(actionLabel);
+    if (!job) throw new Error('Job introuvable.');
+    if (job.type === 'ssh' || job.type === 'ssh_sequence') {
+        await guardAliasWritable(job.alias, actionLabel);
+    } else if (job.type === 'sftp' && (job.direction === 'upload' || job.direction === 'server_to_server')) {
+        await guardAliasWritable(job.alias, actionLabel);
+    }
+}
+
+function jsonResult(obj, params = {}) {
+    const payload = utils.wantsCompact(params) ? utils.compactResult(obj) : obj;
+    return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+}
 
 if (DEBUG) console.error("✅ Serveur MCP créé");
 
@@ -75,9 +144,12 @@ server.registerTool(
         const stats = {
             queue: queue.getStats(),
             pool: ssh.getPoolStats(),
-            servers: await servers.listServers(),
-            apis: await apis.listApis(),
-            crashed: queue.getCrashedJobs().length
+            // Secrets masqués (api_key, password, htpasswd_pass, …)
+            servers: utils.redactSensitiveObject(await servers.listServers()),
+            apis: utils.redactSensitiveObject(await apis.listApis()),
+            crashed: queue.getCrashedJobs().length,
+            version: ORCH_VERSION,
+            readOnly: !!config.readOnly
         };
 
         if (params.verbose) {
@@ -101,13 +173,16 @@ server.registerTool(
             host: z.string().describe("Adresse IP ou nom d'hôte du serveur"),
             user: z.string().describe("Nom d'utilisateur pour la connexion"),
             keyPath: z.string().optional().describe("Chemin absolu vers la clé privée SSH."),
-            password: z.string().optional().describe("Mot de passe pour la connexion.")
+            password: z.string().optional().describe("Mot de passe pour la connexion."),
+            readonly: z.boolean().optional().describe("Si true, refuse les écritures/exec mutantes sur cet alias."),
+            port: z.number().optional().describe("Port SSH (défaut 22).")
         }).refine(data => data.keyPath || data.password, {
             message: "Vous devez fournir au moins une méthode d'authentification ('keyPath' ou 'password')."
         })
     },
     async (params) => {
         try {
+            guardWritable('server_add');
             const { alias, ...serverConfig } = params;
             const result = await servers.addServer(alias, serverConfig);
             return { content: [{ type: "text", text: result.message }] };
@@ -130,7 +205,7 @@ server.registerTool(
         inputSchema: z.object({})
     },
     async () => {
-        const serverList = await servers.listServers();
+        const serverList = utils.redactSensitiveObject(await servers.listServers());
         return { content: [{ type: "text", text: JSON.stringify(serverList, null, 2) }] };
     }
 );
@@ -146,6 +221,7 @@ server.registerTool(
     },
     async (params) => {
         try {
+            guardWritable('server_remove');
             const result = await servers.removeServer(params.alias);
             return { content: [{ type: "text", text: result.message }] };
         } catch (e) {
@@ -155,6 +231,422 @@ server.registerTool(
                 errorMessage: e.message
             };
             return { content: [{ type: "text", text: JSON.stringify(errorPayload, null, 2) }], isError: true };
+        }
+    }
+);
+
+// --- GROUPES D'ALIAS ---
+
+server.registerTool(
+    "server_group_list",
+    {
+        title: "Lister les groupes d'alias",
+        description: "Affiche les groupes de serveurs (oci, contabo, …). Utilisable dans task_exec via alias 'group:nom' ou le nom du groupe.",
+        inputSchema: z.object({})
+    },
+    async () => {
+        const g = await groups.listGroups();
+        return { content: [{ type: "text", text: JSON.stringify(g, null, 2) }] };
+    }
+);
+
+server.registerTool(
+    "server_group_set",
+    {
+        title: "Créer/mettre à jour un groupe d'alias",
+        description: "Définit un groupe nommé pointant vers une liste d'alias serveurs existants.",
+        inputSchema: z.object({
+            name: z.string().describe("Nom du groupe (ex: oci, relays)"),
+            aliases: z.array(z.string()).min(1).describe("Liste d'alias serveurs")
+        })
+    },
+    async (params) => {
+        try {
+            guardWritable('server_group_set');
+            const result = await groups.setGroup(params.name, params.aliases);
+            return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "server_group_set", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
+    "server_group_remove",
+    {
+        title: "Supprimer un groupe d'alias",
+        description: "Supprime un groupe (ne supprime pas les serveurs).",
+        inputSchema: z.object({
+            name: z.string().describe("Nom du groupe")
+        })
+    },
+    async (params) => {
+        try {
+            guardWritable('server_group_remove');
+            const result = await groups.removeGroup(params.name);
+            return { content: [{ type: "text", text: result.message }] };
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "server_group_remove", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
+    "fleet_status",
+    {
+        title: "Status SSH de tout le parc",
+        description: "Ping SSH parallèle : latence, uptime/load/disk légers, clés manquantes. Filtrable par alias, liste, 'all' ou group:nom.",
+        inputSchema: z.object({
+            alias: z.union([z.string(), z.array(z.string())]).optional().describe("Alias, group:x, all, ou tableau. Défaut: tout le parc."),
+            timeout_s: z.number().optional().default(15).describe("Timeout par serveur en secondes")
+        })
+    },
+    async (params) => {
+        try {
+            let aliases;
+            if (params.alias) {
+                aliases = await groups.resolveAliases(params.alias);
+            }
+            const result = await fleet.fleetStatus({
+                aliases,
+                timeoutMs: (params.timeout_s || 15) * 1000
+            });
+            return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "fleet_status", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
+    "infra_audit",
+    {
+        title: "Audit synthèse du parc (1 appel)",
+        description: "Vue combinée : version orchestrator, serveurs (secrets masqués), groupes, notes, projets, crashed jobs, pool stats. Idéal en début de session.",
+        inputSchema: z.object({
+            compact: z.boolean().optional().describe("Réponse tronquée (tokens)")
+        })
+    },
+    async (params) => {
+        try {
+            const [serverList, groupList, noteList, projectList] = await Promise.all([
+                servers.listServers(),
+                groups.listGroups(),
+                notes.list(),
+                projects.list()
+            ]);
+            const audit = {
+                version: ORCH_VERSION,
+                readOnly: !!config.readOnly,
+                compact: !!config.compact,
+                dataDir: config.dataDir,
+                servers: utils.redactSensitiveObject(serverList),
+                groups: groupList,
+                projects: Object.keys(projectList),
+                notes: noteList,
+                queue: queue.getStats(),
+                crashed: queue.getCrashedJobs().map(j => ({ id: j.id, type: j.type, alias: j.alias, crashedAt: j.crashedAt })),
+                pool: ssh.getPoolStats(),
+                timestamp: new Date().toISOString()
+            };
+            return jsonResult(audit, params);
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "infra_audit", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+// --- PROJETS (A) ---
+
+server.registerTool(
+    "project_list",
+    {
+        title: "Lister les projets enregistrés",
+        description: "Registre sémantique projet ↔ serveur(s) ↔ paths local/remote.",
+        inputSchema: z.object({})
+    },
+    async () => jsonResult(await projects.list())
+);
+
+server.registerTool(
+    "project_get",
+    {
+        title: "Détail d'un projet",
+        description: "Retourne la config complète d'un projet (local, servers, ignore, runtime).",
+        inputSchema: z.object({ name: z.string() })
+    },
+    async (params) => {
+        try {
+            return jsonResult(await projects.get(params.name));
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "project_get", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
+    "project_set",
+    {
+        title: "Créer/mettre à jour un projet",
+        description: "Enregistre un projet. Ex: { name:'p-image', local:{path:'…'}, servers:{prod:{alias:'fkomprodmini2_prod', path:'/home/ubuntu/p-image', runtime:{pm2:'p-image', port:5002}}}, ignore:['node_modules'] }",
+        inputSchema: z.object({
+            name: z.string(),
+            description: z.string().optional(),
+            local: z.object({ path: z.string() }).optional(),
+            servers: z.record(z.object({
+                alias: z.string(),
+                path: z.string(),
+                runtime: z.record(z.any()).optional(),
+                url: z.string().optional()
+            })).optional(),
+            ignore: z.array(z.string()).optional(),
+            tags: z.array(z.string()).optional(),
+            network: z.record(z.any()).optional()
+        })
+    },
+    async (params) => {
+        try {
+            guardWritable('project_set');
+            const { name, ...fields } = params;
+            return jsonResult(await projects.set(name, fields));
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "project_set", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
+    "project_remove",
+    {
+        title: "Supprimer un projet du registre",
+        inputSchema: z.object({ name: z.string() })
+    },
+    async (params) => {
+        try {
+            guardWritable('project_remove');
+            return jsonResult(await projects.remove(params.name));
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "project_remove", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
+    "project_resolve",
+    {
+        title: "Résoudre un projet en sources local/remote",
+        description: "Retourne { local, remote, ignore, runtime } prêts pour file_* / project_diff.",
+        inputSchema: z.object({
+            name: z.string(),
+            role: z.string().optional().describe("Rôle serveur (prod, staging…). Défaut: prod ou premier.")
+        })
+    },
+    async (params) => {
+        try {
+            return jsonResult(await projects.resolve(params.name, params.role || null));
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "project_resolve", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+// --- PROJECT DIFF (C) ---
+
+server.registerTool(
+    "project_diff",
+    {
+        title: "Diff local ↔ remote d'un projet enregistré",
+        description: "Compare le path local et le path remote du projet (ignorePatterns du registre). includeDiff pour le détail.",
+        inputSchema: z.object({
+            name: z.string(),
+            role: z.string().optional(),
+            includeDiff: z.boolean().optional().default(false),
+            compact: z.boolean().optional()
+        })
+    },
+    async (params) => {
+        try {
+            const resolved = await projects.resolve(params.name, params.role || null);
+            if (!resolved.local || !resolved.remote) {
+                throw new Error("Le projet doit avoir local.path ET servers.<role>.path pour project_diff.");
+            }
+            const result = await diffEngine.diffFolders(resolved.local, resolved.remote, {
+                ignorePatterns: resolved.ignore,
+                includeDiff: params.includeDiff === true
+            });
+            const summary = {
+                project: params.name,
+                role: resolved.role,
+                local: resolved.local,
+                remote: resolved.remote,
+                stats: result.stats,
+                only_in_local: result.only_in_source1?.length ?? 0,
+                only_in_remote: result.only_in_source2?.length ?? 0,
+                identical: result.identical?.length ?? 0,
+                modified: result.modified?.length ?? 0,
+                modified_paths: (result.modified || []).slice(0, 30).map(m => m.path),
+                only_local_sample: (result.only_in_source1 || []).slice(0, 20),
+                only_remote_sample: (result.only_in_source2 || []).slice(0, 20)
+            };
+            if (params.includeDiff) summary.detail = result;
+            return jsonResult(summary, params);
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "project_diff", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+// --- WORK SESSIONS (B) ---
+
+server.registerTool(
+    "work_start",
+    {
+        title: "Démarrer une session de travail",
+        description: "Ouvre un journal d'intervention (option snapshot). Retourne sessionId. Fermer avec work_end (met à jour server_note).",
+        inputSchema: z.object({
+            alias: z.string().optional(),
+            project: z.string().optional(),
+            tag: z.string().optional(),
+            message: z.string().optional(),
+            snapshot: z.boolean().optional().default(false).describe("Snapshot remote avant travail"),
+            paths: z.array(z.string()).optional().describe("Paths à snapshotter si snapshot:true")
+        })
+    },
+    async (params) => {
+        try {
+            guardWritable('work_start');
+            if (params.alias) await guardAliasWritable(params.alias, 'work_start');
+            const session = await workSession.start(params);
+            return jsonResult(session);
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "work_start", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
+    "work_log",
+    {
+        title: "Logger un événement dans une work session",
+        inputSchema: z.object({
+            id: z.string(),
+            type: z.string().describe("ex: file_edit, task_exec, note"),
+            detail: z.string().optional(),
+            path: z.string().optional()
+        })
+    },
+    async (params) => {
+        try {
+            guardWritable('work_log');
+            const r = await workSession.log(params.id, {
+                type: params.type,
+                detail: params.detail,
+                path: params.path
+            });
+            return jsonResult(r);
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "work_log", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
+    "work_list",
+    {
+        title: "Lister les work sessions",
+        inputSchema: z.object({
+            includeHistory: z.boolean().optional().default(false)
+        })
+    },
+    async (params) => jsonResult(await workSession.list({ includeHistory: params.includeHistory }))
+);
+
+server.registerTool(
+    "work_end",
+    {
+        title: "Clôturer une work session",
+        description: "Ferme la session et met à jour last_intervention sur la note serveur (note:true).",
+        inputSchema: z.object({
+            id: z.string(),
+            summary: z.string().optional(),
+            note: z.boolean().optional().default(true)
+        })
+    },
+    async (params) => {
+        try {
+            guardWritable('work_end');
+            return jsonResult(await workSession.end(params.id, {
+                summary: params.summary,
+                note: params.note !== false
+            }));
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "work_end", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+// --- INVENTORY (D) ---
+
+server.registerTool(
+    "server_inventory",
+    {
+        title: "Inventaire léger d'un serveur (cache 10 min)",
+        description: "hostname, disk, mem, pm2, docker, top-level $HOME, présence tailscale. force:true pour rafraîchir.",
+        inputSchema: z.object({
+            alias: z.string(),
+            force: z.boolean().optional().default(false),
+            compact: z.boolean().optional()
+        })
+    },
+    async (params) => {
+        try {
+            const inv = await inventory.get(params.alias, { force: params.force === true });
+            return jsonResult(inv, params);
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "server_inventory", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+// --- SSH TRUST / AUTHORIZE KEY (v11.6) ---
+
+server.registerTool(
+    "ssh_authorize_key",
+    {
+        title: "Autoriser une pubkey SSH sur un serveur (trust)",
+        description: "Ajoute une clé PUBLIQUE dans authorized_keys d'un serveur. source: string|local_path|.pub|alias (dérive .pub depuis keyPath). Ne copie JAMAIS de private key. dry_run:true par défaut.",
+        inputSchema: z.object({
+            target_alias: z.string().describe("Serveur où écrire authorized_keys"),
+            source: z.object({
+                type: z.enum(['string', 'local_path', 'alias']),
+                pubkey: z.string().optional(),
+                path: z.string().optional(),
+                alias: z.string().optional()
+            }).describe("Origine de la pubkey"),
+            user: z.string().optional().describe("User distant (défaut: user SSH de l'alias)"),
+            authorized_keys_path: z.string().optional(),
+            comment: z.string().optional(),
+            dry_run: z.boolean().optional().default(true),
+            force: z.boolean().optional().default(false)
+        })
+    },
+    async (params) => {
+        try {
+            if (!params.dry_run) {
+                await guardAliasWritable(params.target_alias, 'ssh_authorize_key');
+            }
+            const result = await sshTrust.authorizeKey({
+                target_alias: params.target_alias,
+                source: params.source,
+                user: params.user,
+                authorized_keys_path: params.authorized_keys_path,
+                comment: params.comment,
+                dryRun: params.dry_run !== false,
+                force: params.force === true
+            });
+            return jsonResult(result);
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "ssh_authorize_key", errorMessage: e.message }, null, 2) }], isError: true };
         }
     }
 );
@@ -226,6 +718,7 @@ server.registerTool(
     },
     async (params) => {
         try {
+            guardWritable('api_add');
             const { alias, ...apiConfig } = params;
             const result = await apis.addApi(alias, apiConfig);
             return { content: [{ type: "text", text: result.message }] };
@@ -248,7 +741,8 @@ server.registerTool(
         inputSchema: z.object({})
     },
     async () => {
-        const apiList = await apis.listApis();
+        // Ne jamais renvoyer api_key / htpasswd_pass en clair aux agents
+        const apiList = utils.redactSensitiveObject(await apis.listApis());
         return { content: [{ type: "text", text: JSON.stringify(apiList, null, 2) }] };
     }
 );
@@ -264,6 +758,7 @@ server.registerTool(
     },
     async (params) => {
         try {
+            guardWritable('api_remove');
             const result = await apis.removeApi(params.alias);
             return { content: [{ type: "text", text: result.message }] };
         } catch (e) {
@@ -456,7 +951,7 @@ server.registerTool(
     },
     async (params) => {
         try {
-            const cmd = `sudo fail2ban-client status ${params.jail || ''}`.trim();
+            const cmd = params.jail ? `sudo fail2ban-client status ${utils.escapeShellArg(params.jail)}` : 'sudo fail2ban-client status';
             const job = queue.addJob({
                 type: 'ssh',
                 alias: params.alias,
@@ -495,7 +990,8 @@ async function waitForJobCompletion(jobId, timeout) {
                 resolve(null);
                 return;
             }
-            if (job.status === 'completed' || job.status === 'failed') {
+            // completed | failed | partial | crashed = terminal (plus d'attente)
+            if (utils.isTerminalJobStatus(job.status)) {
                 clearInterval(interval);
                 resolve(job);
             } else if (timeout > 0 && Date.now() - startTime > timeout) {
@@ -520,14 +1016,22 @@ server.registerTool(
         inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             direction: z.enum(['upload', 'download', 'server_to_server']),
-            local: z.string().optional().describe("Chemin absolu local (upload/download)."),
-            remote: z.string().describe("Chemin absolu distant."),
+            local: z.string().optional().describe("Chemin local (upload/download) ou chemin distant SOURCE pour server_to_server."),
+            remote: z.string().describe("Chemin distant cible (upload/server_to_server) ou source distante (download)."),
             source_alias: z.string().optional().describe("Alias source (requis si direction='server_to_server')."),
             force: z.boolean().optional().default(false).describe("Écraser les fichiers existants sans confirmation."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
         })
     },
     async (params) => {
+        try {
+            await guardTransferWritable(params, 'task_transfer');
+            if (params.direction === 'server_to_server' && !params.source_alias) {
+                throw new Error("source_alias requis pour server_to_server.");
+            }
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "task_transfer", errorMessage: e.message }, null, 2) }], isError: true };
+        }
         const job = queue.addJob({ type: 'sftp', ...params, status: 'pending' });
         history.logTask(job);
         sftp.executeTransfer(job.id);
@@ -550,45 +1054,75 @@ server.registerTool(
     "task_exec",
     {
         title: "Exécuter une commande à distance (SSH) — multi-serveur supporté",
-        description: `Exécute une commande SSH. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan. Supporte alias unique ("vps1"), multiple (["vps1","vps2"]) ou "all" pour tout le parc.`,
+        description: `Exécute une commande SSH. Si la tâche prend moins de ${config.syncTimeout / 1000}s, le résultat est direct. Sinon, elle passe en arrière-plan. Supporte alias unique, tableau, "all", "group:nom" ou nom de groupe. dry_run:true sur commande destructive = preview sans exécuter.`,
         inputSchema: z.object({
-            alias: z.union([z.string(), z.array(z.string())]).describe("Alias du serveur cible, tableau d'alias, ou 'all' pour tout le parc."),
+            alias: z.union([z.string(), z.array(z.string())]).describe("Alias, tableau, 'all', 'group:oci' ou nom de groupe."),
             cmd: z.string().describe("La commande complète à exécuter."),
             timeout: z.number().optional().describe("Timeout en secondes. 0 = pas de limite. Défaut: 600s (10 min)."),
             skip_policy: z.boolean().optional().default(false).describe("Ignorer la politique de sécurité (blocklist)."),
+            dry_run: z.boolean().optional().default(false).describe("Si true (ou commande destructive sans force), retourne l'analyse sans exécuter."),
+            force: z.boolean().optional().default(false).describe("Exécuter même si la commande est détectée destructive."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
         })
     },
     async (params) => {
-        const aliases = Array.isArray(params.alias) ? params.alias
-            : params.alias === 'all' ? Object.keys(await servers.listServers())
-            : [params.alias];
-
-        if (aliases.length === 1) {
-            const job = queue.addJob({ type: 'ssh', alias: aliases[0], cmd: params.cmd, timeout: params.timeout, skip_policy: params.skip_policy, status: 'pending' });
-            history.logTask(job);
-            ssh.executeCommand(job.id);
-            const finalJob = await waitForJobCompletion(job.id, config.syncTimeout);
-            if (finalJob) {
-                return { content: [{ type: "text", text: `Résultat direct (tâche ${finalJob.id}):\n${finalJob.output || JSON.stringify(finalJob, null, 2)}` }] };
-            } else {
-                return { content: [{ type: "text", text: buildAsyncMessage(job, "d'exécution") }] };
+        try {
+            guardWritable('task_exec');
+            const aliases = await groups.resolveAliases(params.alias);
+            // RO par alias
+            for (const a of aliases) {
+                if (await servers.isAliasReadOnly(a)) {
+                    throw new Error(`Alias '${a}' est readonly:true — task_exec refusé.`);
+                }
             }
+            const destructive = utils.isDestructiveCommand(params.cmd);
+
+            if (params.dry_run || (destructive && !params.force)) {
+                return {
+                    content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            dry_run: true,
+                            would_execute: !destructive || params.force,
+                            destructive,
+                            aliases,
+                            cmd: params.cmd,
+                            note: destructive && !params.force
+                                ? "Commande détectée destructive. Relancez avec force:true pour exécuter, ou dry_run:true pour confirmer l'intention."
+                                : "Preview dry_run — aucune commande envoyée."
+                        }, null, 2)
+                    }]
+                };
+            }
+
+            if (aliases.length === 1) {
+                const job = queue.addJob({ type: 'ssh', alias: aliases[0], cmd: params.cmd, timeout: params.timeout, skip_policy: params.skip_policy, status: 'pending' });
+                history.logTask(job);
+                ssh.executeCommand(job.id);
+                const finalJob = await waitForJobCompletion(job.id, config.syncTimeout);
+                if (finalJob) {
+                    return { content: [{ type: "text", text: `Résultat direct (tâche ${finalJob.id}):\n${finalJob.output || JSON.stringify(finalJob, null, 2)}` }] };
+                } else {
+                    return { content: [{ type: "text", text: buildAsyncMessage(job, "d'exécution") }] };
+                }
+            }
+
+            const jobs = aliases.map(alias =>
+                queue.addJob({ type: 'ssh', alias, cmd: params.cmd, timeout: params.timeout, skip_policy: params.skip_policy, status: 'pending' })
+            );
+            jobs.forEach(j => { history.logTask(j); ssh.executeCommand(j.id); });
+
+            const results = await Promise.all(jobs.map(j => waitForJobCompletion(j.id, config.syncTimeout)));
+            const output = results.map((r, i) => {
+                if (!r) return `[${aliases[i]}] Timeout ou erreur`;
+                if (r.status === 'failed') return `[${aliases[i]}] ERREUR: ${r.error}`;
+                return `[${aliases[i]}] OK\n${r.output || '(vide)'}`;
+            }).join('\n\n---\n\n');
+
+            return { content: [{ type: "text", text: `Résultats multi-serveur (${aliases.length} cibles):\n\n${output}` }] };
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "task_exec", errorMessage: e.message }, null, 2) }], isError: true };
         }
-
-        const jobs = aliases.map(alias =>
-            queue.addJob({ type: 'ssh', alias, cmd: params.cmd, timeout: params.timeout, skip_policy: params.skip_policy, status: 'pending' })
-        );
-        jobs.forEach(j => { history.logTask(j); ssh.executeCommand(j.id); });
-
-        const results = await Promise.all(jobs.map(j => waitForJobCompletion(j.id, config.syncTimeout)));
-        const output = results.map((r, i) => {
-            if (!r) return `[${aliases[i]}] Timeout ou erreur`;
-            if (r.status === 'failed') return `[${aliases[i]}] ERREUR: ${r.error}`;
-            return `[${aliases[i]}] OK\n${r.output || '(vide)'}`;
-        }).join('\n\n---\n\n');
-
-        return { content: [{ type: "text", text: `Résultats multi-serveur (${aliases.length} cibles):\n\n${output}` }] };
     }
 );
 
@@ -606,13 +1140,20 @@ server.registerTool(
     "task_queue",
     {
         title: "Voir la file d'attente des tâches",
-        description: "Affiche le statut de toutes les tâches, avec des rappels pour les tâches longues.",
-        inputSchema: z.object({})
+        description: "Affiche la queue récente. Filtrable par statut et paginable pour éviter de déverser des centaines de jobs dans le contexte.",
+        inputSchema: z.object({
+            status: z.enum(['pending','running','completed','failed','crashed','partial']).optional().describe("Filtre optionnel par statut."),
+            limit: z.number().int().min(1).max(500).optional().default(100).describe("Nombre maximum de jobs retournés."),
+            compact: z.boolean().optional().default(true).describe("Tronque les gros champs output/stderr/diff. Défaut true.")
+        })
     },
-    async () => {
+    async (params) => {
         const queueState = queue.getQueue();
-        const displayQueue = Object.values(queueState).map(formatJobForDisplay);
-        return { content: [{ type: "text", text: JSON.stringify(displayQueue, null, 2) }] };
+        let displayQueue = Object.values(queueState).map(formatJobForDisplay);
+        if (params.status) displayQueue = displayQueue.filter(j => j.status === params.status);
+        displayQueue.sort((a,b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+        displayQueue = displayQueue.slice(0, params.limit);
+        return jsonResult({ jobs: displayQueue, count: displayQueue.length, total: Object.keys(queueState).length }, params);
     }
 );
 
@@ -638,14 +1179,18 @@ server.registerTool(
     "task_history",
     {
         title: "Consulter l'historique des tâches",
-        description: "Affiche les dernières tâches lancées. Peut être filtré par alias.",
+        description: "Historique récent des tâches, filtrable par alias et paginable. Utiliser task_status pour le détail complet d'un job précis.",
         inputSchema: z.object({
-            alias: z.string().optional().describe("Filtre l'historique pour ne montrer que les tâches d'un alias spécifique.")
+            alias: z.string().optional().describe("Filtre par alias serveur."),
+            limit: z.number().int().min(1).max(500).optional().default(100).describe("Nombre maximum d'entrées."),
+            offset: z.number().int().min(0).optional().default(0).describe("Décalage pour pagination."),
+            compact: z.boolean().optional().default(true).describe("Tronque les gros champs si présents.")
         })
     },
     async (params) => {
-        const historyLogs = await history.getHistory(params);
-        return { content: [{ type: "text", text: JSON.stringify(historyLogs, null, 2) }] };
+        const historyLogs = await history.getHistory({ alias: params.alias });
+        const page = historyLogs.slice(params.offset, params.offset + params.limit);
+        return jsonResult({ entries: page, count: page.length, total: historyLogs.length, offset: params.offset, limit: params.limit }, params);
     }
 );
 
@@ -658,16 +1203,27 @@ server.registerTool(
         description: "Lance des transferts SFTP multiples avec support de patterns glob (*, ?, []).",
         inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
-            direction: z.enum(['upload', 'download']),
+            direction: z.enum(['upload', 'download', 'server_to_server']),
+            source_alias: z.string().optional().describe("Alias source commun pour server_to_server (surchargeable par fichier)."),
             files: z.array(z.object({
-                local: z.string().describe("Chemin local ou pattern glob (ex: /home/*.txt)"),
-                remote: z.string().describe("Chemin distant")
-            })).describe("Liste des fichiers à transférer"),
+                local: z.string().describe("Chemin local/pattern, ou chemin distant SOURCE en server_to_server."),
+                remote: z.string().describe("Chemin distant cible."),
+                source_alias: z.string().optional().describe("Alias source spécifique à ce fichier en server_to_server.")
+            })).min(1).describe("Liste des fichiers/dossiers à transférer"),
             force: z.boolean().optional().default(false).describe("Écraser les fichiers existants sans confirmation."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
         })
     },
     async (params) => {
+        try {
+            await guardTransferWritable(params, 'task_transfer_multi');
+            if (params.direction === 'server_to_server') {
+                const missing = params.files.some(f => !(f.source_alias || params.source_alias));
+                if (missing) throw new Error("source_alias requis (global ou par fichier) pour server_to_server.");
+            }
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "task_transfer_multi", errorMessage: e.message }, null, 2) }], isError: true };
+        }
         const job = queue.addJob({
             type: 'sftp',
             ...params,
@@ -702,6 +1258,8 @@ server.registerTool(
         })
     },
     async (params) => {
+        try { await guardAliasWritable(params.alias, 'task_exec_interactive'); }
+        catch (e) { return { content: [{ type: "text", text: JSON.stringify({ toolName: "task_exec_interactive", errorMessage: e.message }, null, 2) }], isError: true }; }
         const job = queue.addJob({
             type: 'ssh',
             ...params,
@@ -712,7 +1270,10 @@ server.registerTool(
         history.logTask(job);
         ssh.executeCommand(job.id);
 
-        const finalJob = await waitForJobCompletion(job.id, params.timeout || config.syncTimeout);
+        // Hybrid wait toujours en ms (config.syncTimeout). params.timeout = timeout COMMANDE en secondes (job).
+        // Ancien bug : params.timeout (secondes) passé tel quel → attente de 30ms au lieu de 30s.
+        const waitMs = utils.toWaitTimeoutMs(undefined, config.syncTimeout);
+        const finalJob = await waitForJobCompletion(job.id, waitMs);
         if (finalJob) {
             return { content: [{ type: "text", text: `Résultat commande interactive (tâche ${finalJob.id}):\n${finalJob.output || JSON.stringify(finalJob, null, 2)}` }] };
         } else {
@@ -738,13 +1299,17 @@ server.registerTool(
             ])).min(1).describe("Liste des commandes à exécuter en séquence (minimum 1)."),
             continueOnError: z.boolean().optional().default(false).describe("Continuer même si une commande échoue."),
             timeout: z.number().optional().describe("Timeout global en secondes. 0 = pas de limite. Défaut: 600s (10 min)."),
+            skip_policy: z.boolean().optional().default(false).describe("Ignorer la politique de sécurité (blocklist) pour chaque étape."),
             rappel: z.number().optional().describe("Définit un rappel en secondes.")
         })
     },
     async (params) => {
+        try { await guardAliasWritable(params.alias, 'task_exec_sequence'); }
+        catch (e) { return { content: [{ type: "text", text: JSON.stringify({ toolName: "task_exec_sequence", errorMessage: e.message }, null, 2) }], isError: true }; }
         const job = queue.addJob({
             type: 'ssh_sequence',
             ...params,
+            skip_policy: params.skip_policy,
             status: 'pending'
         });
         history.logTask(job);
@@ -792,6 +1357,12 @@ server.registerTool(
     }
 );
 
+function dispatchJob(job) {
+    if (job.type === 'sftp') sftp.executeTransfer(job.id);
+    else if (job.type === 'ssh') ssh.executeCommand(job.id);
+    else if (job.type === 'ssh_sequence') ssh.executeCommandSequence(job.id);
+}
+
 server.registerTool(
     "task_retry",
     {
@@ -803,17 +1374,11 @@ server.registerTool(
     },
     async (params) => {
         try {
+            guardWritable('task_retry');
+            const originalJob = queue.getJob(params.id);
+            await guardRetryJobWritable(originalJob, 'task_retry');
             const newJob = await queue.retryJob(params.id);
-
-            // Relancer selon le type
-            if (newJob.type === 'sftp') {
-                sftp.executeTransfer(newJob.id);
-            } else if (newJob.type === 'ssh') {
-                ssh.executeCommand(newJob.id);
-            } else if (newJob.type === 'ssh_sequence') {
-                ssh.executeCommandSequence(newJob.id);
-            }
-
+            dispatchJob(newJob);
             return { content: [{ type: "text", text: `Tâche ${params.id} relancée avec le nouvel ID: ${newJob.id}` }] };
         } catch (e) {
             const errorPayload = {
@@ -827,6 +1392,82 @@ server.registerTool(
 );
 
 server.registerTool(
+    "task_retry_all",
+    {
+        title: "Relancer toutes les tâches crashed/failed",
+        description: "Relance en masse les jobs retryables (crashed et/ou failed). dry_run:true pour lister sans exécuter.",
+        inputSchema: z.object({
+            status: z.enum(['crashed', 'failed', 'both']).optional().default('crashed').describe("Filtrer par statut"),
+            dry_run: z.boolean().optional().default(false),
+            limit: z.number().optional().default(20).describe("Max de jobs à relancer")
+        })
+    },
+    async (params) => {
+        try {
+            if (!params.dry_run) guardWritable('task_retry_all');
+            const filter = params.status === 'both' ? null : params.status;
+            let jobs = queue.getRetryableJobs(filter);
+            if (params.status === 'both') {
+                jobs = queue.getRetryableJobs(null);
+            }
+            jobs = jobs.slice(0, params.limit || 20);
+            if (params.dry_run) {
+                return {
+                    content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            dry_run: true,
+                            count: jobs.length,
+                            jobs: jobs.map(j => ({ id: j.id, type: j.type, alias: j.alias, status: j.status, cmd: (j.cmd || '').slice(0, 80) }))
+                        }, null, 2)
+                    }]
+                };
+            }
+            const results = [];
+            for (const j of jobs) {
+                try {
+                    await guardRetryJobWritable(j, 'task_retry_all');
+                    const newJob = await queue.retryJob(j.id);
+                    dispatchJob(newJob);
+                    results.push({ from: j.id, to: newJob.id, ok: true });
+                } catch (e) {
+                    results.push({ from: j.id, ok: false, error: e.message });
+                }
+            }
+            return { content: [{ type: "text", text: JSON.stringify({ retried: results.length, results }, null, 2) }] };
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "task_retry_all", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
+    "task_purge",
+    {
+        title: "Purger les jobs terminés/crashés de la queue",
+        description: "Supprime de la queue les jobs crashed/failed/completed. dry_run:true pour compter sans supprimer. olderThanDays optionnel.",
+        inputSchema: z.object({
+            status: z.enum(['crashed', 'failed', 'completed', 'all_terminal']).optional().default('crashed'),
+            olderThanDays: z.number().optional().default(0).describe("0 = tous les jobs du statut, sinon âge minimum en jours"),
+            dry_run: z.boolean().optional().default(true).describe("Défaut true (sécurité) — dry_run:false pour purger vraiment")
+        })
+    },
+    async (params) => {
+        try {
+            if (!params.dry_run) guardWritable('task_purge');
+            const result = queue.purgeJobs({
+                status: params.status,
+                olderThanDays: params.olderThanDays || 0,
+                dryRun: params.dry_run !== false
+            });
+            return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        } catch (e) {
+            return { content: [{ type: "text", text: JSON.stringify({ toolName: "task_purge", errorMessage: e.message }, null, 2) }], isError: true };
+        }
+    }
+);
+
+server.registerTool(
     "task_logs",
     {
         title: "Consulter les logs système",
@@ -834,7 +1475,8 @@ server.registerTool(
         inputSchema: z.object({
             level: z.enum(['error', 'warn', 'info', 'debug']).optional().describe("Filtrer par niveau de log."),
             search: z.string().optional().describe("Rechercher dans les messages."),
-            limit: z.number().optional().default(50).describe("Nombre de logs à afficher.")
+            limit: z.number().int().min(1).max(500).optional().default(50).describe("Nombre de logs à afficher (1..500)."),
+            compact: z.boolean().optional().default(true).describe("Tronque les messages exceptionnellement volumineux.")
         })
     },
     async (params) => {
@@ -842,7 +1484,7 @@ server.registerTool(
             level: params.level,
             search: params.search
         }).slice(-params.limit);
-        return { content: [{ type: "text", text: JSON.stringify(logs, null, 2) }] };
+        return jsonResult({ logs, count: logs.length }, params);
     }
 );
 
@@ -856,13 +1498,13 @@ server.registerTool(
         inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             app: z.string().optional().describe("Nom de l'application PM2 (optionnel, toutes par défaut)."),
-            lines: z.number().optional().default(100).describe("Nombre de lignes à récupérer."),
+            lines: z.number().int().min(1).max(100000).optional().default(100).describe("Nombre de lignes à récupérer (1..100000)."),
             errors: z.boolean().optional().default(false).describe("Récupérer uniquement les erreurs (stderr).")
         })
     },
     async (params) => {
         let cmd = 'pm2 logs';
-        if (params.app) cmd += ` ${params.app}`;
+        if (params.app) cmd += ` ${utils.escapeShellArg(params.app)}`;
         if (params.errors) cmd += ' --err';
         cmd += ` --lines ${params.lines} --nostream`;
 
@@ -886,14 +1528,14 @@ server.registerTool(
         inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             container: z.string().describe("Nom ou ID du container Docker."),
-            lines: z.number().optional().default(100).describe("Nombre de lignes à récupérer."),
+            lines: z.number().int().min(1).max(100000).optional().default(100).describe("Nombre de lignes à récupérer (1..100000)."),
             since: z.string().optional().describe("Logs depuis (ex: '5m', '1h', '2024-01-01')."),
             timestamps: z.boolean().optional().default(false).describe("Afficher les timestamps.")
         })
     },
     async (params) => {
         let cmd = `docker logs --tail ${params.lines}`;
-        if (params.since) cmd += ` --since ${params.since}`;
+        if (params.since) cmd += ` --since ${utils.escapeShellArg(params.since)}`;
         if (params.timestamps) cmd += ' --timestamps';
         cmd += ` ${utils.escapeShellArg(params.container)}`;
 
@@ -918,7 +1560,7 @@ server.registerTool(
         inputSchema: z.object({
             alias: z.string().describe("Alias du serveur cible."),
             filepath: z.string().describe("Chemin absolu du fichier à lire."),
-            lines: z.number().optional().default(50).describe("Nombre de lignes à afficher.")
+            lines: z.number().int().min(1).max(100000).optional().default(50).describe("Nombre de lignes à afficher (1..100000).")
         })
     },
     async (params) => {
@@ -1182,7 +1824,7 @@ server.registerTool(
             return { content: [{ type: "text", text: detail }] };
         }
 
-        const guide = `=== GUIDE MCP ORCHESTRATOR v11.3.0 ===
+        const guide = `=== GUIDE MCP ORCHESTRATOR v${ORCH_VERSION} ===
 
 OUTILS DISPONIBLES (${allTools.length}):
 ${allTools.map(t => `  ${t.name}: ${t.desc}`).join('\n')}
@@ -1287,6 +1929,12 @@ server.registerTool(
     },
     async (params) => {
         try {
+            if (!params.dryRun) {
+                guardWritable('file_write');
+                if (params.source?.type === 'remote' && params.source.alias) {
+                    await guardAliasWritable(params.source.alias, 'file_write');
+                }
+            }
             const source = resolveSource(params.source);
             const result = await fileOps.writeFile(source, params.content, params.encoding, {
                 createDirs: params.createDirs,
@@ -1326,6 +1974,12 @@ server.registerTool(
     },
     async (params) => {
         try {
+            if (!params.dryRun) {
+                guardWritable('file_edit');
+                if (params.source?.type === 'remote' && params.source.alias) {
+                    await guardAliasWritable(params.source.alias, 'file_edit');
+                }
+            }
             const source = resolveSource(params.source);
             const result = await fileOps.editFile(source, {
                 oldString: params.oldString,
@@ -1516,16 +2170,23 @@ server.registerTool(
     "shell_exec",
     {
         title: "Exécuter dans une session shell persistante",
-        description: "Exécute une commande dans une session shell existante (créée via shell_create). L'état (répertoire courant, variables) PERSISTE entre les appels. Retourne { output, exitCode, timedOut }. Une seule commande à la fois par session.",
+        description: "Exécute une commande dans une session shell existante (créée via shell_create). L'état (répertoire courant, variables) PERSISTE entre les appels. Retourne { output, exitCode, timedOut }. Une seule commande à la fois par session. Respecte la blocklist (skip_policy:true pour forcer).",
         inputSchema: z.object({
             sessionId: z.string().describe("ID de session obtenu via shell_create"),
             command: z.string().describe("Commande à exécuter"),
-            timeout: z.number().optional().describe("Timeout en secondes pour cette commande (0=infini)")
+            timeout: z.number().optional().describe("Timeout en secondes pour cette commande (0=infini)"),
+            skip_policy: z.boolean().optional().default(false).describe("Ignorer la politique de sécurité (blocklist).")
         })
     },
     async (params) => {
         try {
-            const result = await shellSessions.execInSession(params.sessionId, params.command, params.timeout);
+            const sessionInfo = shellSessions.getSessionInfo(params.sessionId);
+            if (!sessionInfo) throw new Error(`Session '${params.sessionId}' introuvable.`);
+            await guardAliasWritable(sessionInfo.alias, 'shell_exec');
+            const result = await shellSessions.execInSession(params.sessionId, params.command, {
+                timeoutSec: params.timeout,
+                skip_policy: params.skip_policy
+            });
             return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
         } catch (e) {
             const errorPayload = { toolName: "shell_exec", errorCode: "SHELL_EXEC_ERROR", errorMessage: e.message };
@@ -1699,7 +2360,12 @@ server.registerTool(
             if (params.target.type === 'remote' && !params.target.alias) {
                 throw new Error("alias requis quand type='remote'.");
             }
-            // Sécurité : restauration réelle bloquée sans force explicite
+            // Sécurité : restauration réelle soumise aux policies globales/alias.
+            if (!params.dryRun) {
+                guardWritable('snapshot_restore');
+                if (params.target.type === 'remote') await guardAliasWritable(params.target.alias, 'snapshot_restore');
+            }
+            // Restauration réelle bloquée sans force explicite
             if (!params.dryRun && !params.force) {
                 const errorPayload = {
                     toolName: "snapshot_restore",
@@ -1733,6 +2399,7 @@ server.registerTool(
     },
     async (params) => {
         try {
+            guardWritable('snapshot_delete');
             const result = await snapshotManager.deleteSnapshot(params.snapshotId);
             return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
         } catch (e) {
@@ -1761,6 +2428,7 @@ server.registerTool(
     },
     async (params) => {
         try {
+            guardWritable('server_note_set');
             const { alias, ...fields } = params;
             const result = await notes.set(alias, fields);
             return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
@@ -1823,6 +2491,7 @@ server.registerTool(
     },
     async (params) => {
         try {
+            guardWritable('server_note_remove');
             const result = await notes.remove(params.alias);
             return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
         } catch (e) {
@@ -1832,32 +2501,79 @@ server.registerTool(
     }
 );
 
-// --- VUE SYNTHÉTIQUE DU PARC ---
+// --- VUE SYNTHÉTIQUE / TOPOLOGIE DU PARC ---
 
 server.registerTool(
     "infra_overview",
     {
-        title: "Vue synthétique du parc",
-        description: "Vue d'ensemble en un appel : liste des serveurs configurés + leurs notes (rôle, services, avertissements). Idéal en début de session pour situer le contexte sans se perdre.",
-        inputSchema: z.object({})
+        title: "Cartographier le parc ou une machine",
+        description: "Vue légère du parc sans alias; avec alias/group:/all, découverte live des ports, Docker/Compose, PM2, systemd et Nginx avec corrélation domaine → proxy → port → conteneur/service.",
+        inputSchema: z.object({
+            alias: z.string().optional().describe("Alias serveur, 'all' ou 'group:<nom>'. Si fourni, active automatiquement la découverte live."),
+            live: z.boolean().optional().describe("Force la découverte live. Sans alias, live:true sonde tout le parc; défaut false pour garder l'appel initial léger."),
+            force: z.boolean().optional().default(false).describe("Ignore le cache topologique court (2 min) et re-sonde les machines."),
+            compact: z.boolean().optional().default(true).describe("Réduit les gros tableaux/chaînes tout en conservant le graphe domaine→service. Défaut true en mode live."),
+            timeoutMs: z.number().int().min(5000).max(60000).optional().default(25000).describe("Timeout par machine pour la découverte live (5s..60s).")
+        }),
+        outputSchema: {
+            mode: z.enum(["registry", "live"]),
+            count: z.number(),
+            generatedAt: z.string(),
+            servers: z.array(z.any())
+        }
     },
-    async () => {
+    async (params) => {
         try {
             const serverList = await servers.listServers();
             const allNotes = await notes.list();
-            const overview = Object.entries(serverList).map(([alias, cfg]) => {
+            const registry = Object.entries(serverList).map(([alias, cfg]) => {
                 const n = allNotes[alias] || {};
                 return {
                     alias,
                     host: cfg.host,
                     user: cfg.user,
+                    port: utils.resolveSshPort(cfg),
+                    readonly: cfg.readonly === true || cfg.readOnly === true,
                     description: n.description || null,
                     services: n.services || [],
                     warnings: n.warnings || [],
+                    conventions: n.conventions || [],
                     lastIntervention: n.last_intervention || null
                 };
             });
-            return { content: [{ type: "text", text: JSON.stringify({ servers: overview, count: overview.length }, null, 2) }] };
+
+            const liveRequested = params.live === true || Boolean(params.alias);
+            if (!liveRequested) {
+                const payload = { mode: "registry", count: registry.length, generatedAt: new Date().toISOString(), servers: registry };
+                return {
+                    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+                    structuredContent: payload
+                };
+            }
+
+            const aliases = await groups.resolveAliases(params.alias || 'all');
+            const registryByAlias = new Map(registry.map(item => [item.alias, item]));
+            const liveServers = await Promise.all(aliases.map(async (alias) => {
+                const base = registryByAlias.get(alias) || { alias };
+                try {
+                    const topology = await infraTopology.get(alias, {
+                        force: params.force === true,
+                        timeoutMs: params.timeoutMs || 25000
+                    });
+                    return { ok: true, ...base, topology };
+                } catch (error) {
+                    return { ok: false, ...base, error: error.message };
+                }
+            }));
+
+            let payload = { mode: "live", count: liveServers.length, generatedAt: new Date().toISOString(), servers: liveServers };
+            if (params.compact !== false) {
+                payload = utils.compactResult(payload, { maxString: 1200, maxArray: 100, dropKeys: ['raw'] });
+            }
+            return {
+                content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+                structuredContent: payload
+            };
         } catch (e) {
             const errorPayload = { toolName: "infra_overview", errorCode: "OVERVIEW_ERROR", errorMessage: e.message };
             return { content: [{ type: "text", text: JSON.stringify(errorPayload, null, 2) }], isError: true };
@@ -1890,11 +2606,14 @@ server.registerTool(
         })
     },
     async (params) => {
+        try { await guardAliasWritable(params.alias, 'tmux_create'); }
+        catch (e) { return { content: [{ type: "text", text: JSON.stringify({ toolName: "tmux_create", errorMessage: e.message }, null, 2) }], isError: true }; }
         const tmuxCheck = await checkTmux(params.alias);
         if (!tmuxCheck.installed) return { content: [{ type: "text", text: tmuxCheck.message }] };
         const sessionName = params.name || `tmux-${Date.now()}`;
-        const startCmd = params.start_cmd ? `tmux send-keys -t ${sessionName} '${params.start_cmd}' Enter` : '';
-        const cmd = `tmux new-session -d -s ${sessionName} ${startCmd.length > 0 ? '&& ' + startCmd : ''}`;
+        const qSession = utils.escapeShellArg(sessionName);
+        const startCmd = params.start_cmd ? `tmux send-keys -t ${qSession} -- ${utils.escapeShellArg(params.start_cmd)} Enter` : '';
+        const cmd = `tmux new-session -d -s ${qSession}${startCmd ? ' && ' + startCmd : ''}`;
         const job = queue.addJob({ type: 'ssh', alias: params.alias, cmd, streaming: false, status: 'pending' });
         history.logTask(job);
         ssh.executeCommand(job.id);
@@ -1916,9 +2635,11 @@ server.registerTool(
         })
     },
     async (params) => {
+        try { await guardAliasWritable(params.alias, 'tmux_exec'); }
+        catch (e) { return { content: [{ type: "text", text: JSON.stringify({ toolName: "tmux_exec", errorMessage: e.message }, null, 2) }], isError: true }; }
         const tmuxCheck = await checkTmux(params.alias);
         if (!tmuxCheck.installed) return { content: [{ type: "text", text: tmuxCheck.message }] };
-        const cmd = `tmux send-keys -t ${params.session} '${params.cmd}' Enter`;
+        const cmd = `tmux send-keys -t ${utils.escapeShellArg(params.session)} -- ${utils.escapeShellArg(params.cmd)} Enter`;
         const job = queue.addJob({ type: 'ssh', alias: params.alias, cmd, streaming: false, status: 'pending' });
         history.logTask(job);
         ssh.executeCommand(job.id);
@@ -1940,7 +2661,7 @@ server.registerTool(
     async (params) => {
         const tmuxCheck = await checkTmux(params.alias);
         if (!tmuxCheck.installed) return { content: [{ type: "text", text: tmuxCheck.message }] };
-        const cmd = `tmux capture-pane -t ${params.session} -p -S -200`;
+        const cmd = `tmux capture-pane -t ${utils.escapeShellArg(params.session)} -p -S -200`;
         const job = queue.addJob({ type: 'ssh', alias: params.alias, cmd, streaming: false, status: 'pending' });
         history.logTask(job);
         ssh.executeCommand(job.id);
@@ -1983,9 +2704,12 @@ server.registerTool(
         })
     },
     async (params) => {
+        try { await guardAliasWritable(params.alias, 'tmux_kill'); }
+        catch (e) { return { content: [{ type: "text", text: JSON.stringify({ toolName: "tmux_kill", errorMessage: e.message }, null, 2) }], isError: true }; }
         const tmuxCheck = await checkTmux(params.alias);
         if (!tmuxCheck.installed) return { content: [{ type: "text", text: tmuxCheck.message }] };
-        const cmd = `tmux kill-session -t ${params.session} 2>/dev/null && echo 'Session ${params.session} tuée.' || echo 'Session introuvable.'`;
+        const qSession = utils.escapeShellArg(params.session);
+        const cmd = `tmux kill-session -t ${qSession} 2>/dev/null && echo ${utils.escapeShellArg(`Session ${params.session} tuée.`)} || echo 'Session introuvable.'`;
         const job = queue.addJob({ type: 'ssh', alias: params.alias, cmd, streaming: false, status: 'pending' });
         history.logTask(job);
         ssh.executeCommand(job.id);
@@ -2014,6 +2738,8 @@ server.registerTool(
     },
     async (params) => {
         try {
+            guardWritable('tunnel_create');
+            if (params.source) await guardAliasWritable(params.source, 'tunnel_create');
             const result = await tunnels.create(params, servers);
             return { content: [{ type: "text", text: result }] };
         } catch (e) {
@@ -2046,6 +2772,9 @@ server.registerTool(
     },
     async (params) => {
         try {
+            guardWritable('tunnel_close');
+            const info = await tunnels.get(params.name);
+            if (info?.source) await guardAliasWritable(info.source, 'tunnel_close');
             const result = await tunnels.close(params.name, servers);
             return { content: [{ type: "text", text: result }] };
         } catch (e) {
@@ -2064,6 +2793,7 @@ server.registerTool(
         })
     },
     async (params) => {
+        guardWritable('tunnel_allowlist_add');
         const list = await tunnels.allowlistAdd(params.port);
         return { content: [{ type: "text", text: `Port ${params.port} ajouté à l'allowlist.\nPorts autorisés: ${list.join(', ')}` }] };
     }
@@ -2079,6 +2809,7 @@ server.registerTool(
         })
     },
     async (params) => {
+        guardWritable('tunnel_allowlist_remove');
         const list = await tunnels.allowlistRemove(params.port);
         return { content: [{ type: "text", text: `Port ${params.port} retiré de l'allowlist.\nPorts autorisés: ${list.join(', ')}` }] };
     }

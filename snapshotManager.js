@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { createTwoFilesPatch } from 'diff';
 import config from './config.js';
 import sourceAdapter from './sourceAdapter.js';
+import jsonStore from './atomicJsonStore.js';
 
 /**
  * snapshotManager — Versioning d'infrastructure (style gencodedoc).
@@ -37,17 +38,12 @@ async function ensureDirs() {
 }
 
 async function readIndex() {
-    try {
-        const data = await fs.readFile(INDEX_FILE, 'utf8');
-        return JSON.parse(data);
-    } catch {
-        return { snapshots: [] };
-    }
+    return jsonStore.readJson(INDEX_FILE, { snapshots: [] });
 }
 
 async function writeIndex(index) {
     await ensureDirs();
-    await fs.writeFile(INDEX_FILE, JSON.stringify(index, null, 2));
+    await jsonStore.writeJsonAtomic(INDEX_FILE, index);
 }
 
 function objectPath(hash) {

@@ -7,6 +7,7 @@ import serverManager from './servers.js';
 import sourceAdapter from './sourceAdapter.js';
 import fileOps from './fileOps.js';
 import micromatch from 'micromatch';
+import utils from './utils.js';
 
 // Fonction utilitaire pour créer un dossier parent si nécessaire
 async function ensureLocalDir(filePath) {
@@ -72,13 +73,92 @@ async function expandFileList(pattern, basePath = '') {
     // Si c'est un pattern glob
     if (pattern.includes('*') || pattern.includes('?') || pattern.includes('[')) {
         const fullPattern = path.resolve(normalizedBasePath, pattern);
+        sourceAdapter.assertLocalPathAllowed(fullPattern);
         const files = await glob(fullPattern, { nodir: false });
+        for (const f of files) sourceAdapter.assertLocalPathAllowed(f);
         return files;
     }
 
     // Sinon c'est un fichier/dossier simple
     const fullPath = path.resolve(normalizedBasePath, pattern);
+    sourceAdapter.assertLocalPathAllowed(fullPath);
     return [fullPath];
+}
+
+/**
+ * Copie une entrée remote -> remote via le pool SFTP partagé.
+ *
+ * - fichier : respecte force:false et append le basename si la cible est un dossier ;
+ * - dossier : copie récursivement les fichiers sous la racine cible ; force:false
+ *   refuse une cible déjà existante afin d'éviter les merges/écrasements implicites.
+ *
+ * Note : les symlinks inclus dans un arbre sont volontairement ignorés par
+ * listFilesRecursive pour l'instant. La future stratégie direct/rsync devra les
+ * préserver ; le résultat expose un warning pour ne pas promettre une copie bit-à-bit.
+ */
+async function transferServerToServerEntry(file, job, force) {
+    const srcAlias = file.source_alias || job.source_alias;
+    const srcPath = file.source_path || file.local || file.remote;
+    const tgtAlias = job.alias;
+    const tgtPath = file.remote;
+
+    if (!srcAlias) throw new Error("source_alias requis pour server_to_server.");
+    if (!srcPath) throw new Error("Chemin source requis (local/source_path) pour server_to_server.");
+    if (!tgtPath) throw new Error("Chemin destination remote requis pour server_to_server.");
+
+    const srcKind = await sourceAdapter.exists({ type: 'remote', alias: srcAlias, path: srcPath });
+    if (!srcKind) throw new Error(`Source introuvable: ${srcAlias}:${srcPath}`);
+
+    if (srcKind === 'd') {
+        const dstKind = await sourceAdapter.exists({ type: 'remote', alias: tgtAlias, path: tgtPath });
+        if (dstKind && dstKind !== 'd') {
+            throw new Error(`La destination ${tgtAlias}:${tgtPath} existe et n'est pas un dossier.`);
+        }
+        if (dstKind && !force) {
+            throw new Error(
+                `Le dossier destination ${tgtAlias}:${tgtPath} existe déjà. ` +
+                `Utilisez force:true pour fusionner/écraser explicitement.`
+            );
+        }
+
+        const rels = await sourceAdapter.listFilesRecursive(
+            { type: 'remote', alias: srcAlias, path: srcPath },
+            { recursive: true, ignorePatterns: [] }
+        );
+        let success = 0;
+        const failures = [];
+        for (const rel of rels) {
+            const from = path.posix.join(srcPath, rel);
+            const to = path.posix.join(tgtPath, rel);
+            try {
+                const buf = await sourceAdapter.readFile({ type: 'remote', alias: srcAlias, path: from });
+                await sourceAdapter.writeFile({ type: 'remote', alias: tgtAlias, path: to }, buf.content, { createDirs: true });
+                success++;
+            } catch (e) {
+                failures.push({ file: from, target: to, error: e.message });
+            }
+        }
+        return {
+            total: rels.length, success, failures,
+            warning: 'Copie dossier SFTP: symlinks et dossiers vides non préservés; utiliser une future stratégie rsync/tar pour une réplication bit-à-bit.'
+        };
+    }
+
+    let finalTarget = tgtPath;
+    const dstKind = await sourceAdapter.exists({ type: 'remote', alias: tgtAlias, path: tgtPath });
+    if (dstKind === 'd') {
+        finalTarget = path.posix.join(tgtPath, path.posix.basename(srcPath));
+        const nestedKind = await sourceAdapter.exists({ type: 'remote', alias: tgtAlias, path: finalTarget });
+        if (nestedKind && !force) {
+            throw new Error(`Le fichier distant ${tgtAlias}:${finalTarget} existe déjà. Utilisez force:true.`);
+        }
+    } else if (dstKind && !force) {
+        throw new Error(`Le fichier distant ${tgtAlias}:${tgtPath} existe déjà. Utilisez force:true.`);
+    }
+
+    const buf = await sourceAdapter.readFile({ type: 'remote', alias: srcAlias, path: srcPath });
+    await sourceAdapter.writeFile({ type: 'remote', alias: tgtAlias, path: finalTarget }, buf.content, { createDirs: true });
+    return { total: 1, success: 1, failures: [] };
 }
 
 // Fonction principale de transfert avec support multi-fichiers
@@ -88,32 +168,8 @@ async function executeTransfer(jobId) {
 
     let sftp = null;
     try {
-        const serverConfig = await serverManager.getServer(job.alias);
         queue.updateJobStatus(jobId, 'running');
 
-        sftp = new SftpClient();
-
-        // Configuration de la connexion
-        const config = {
-            host: serverConfig.host,
-            port: 22,
-            username: serverConfig.user,
-            readyTimeout: 20000,
-            retries: 3,
-            retry_factor: 2,
-            retry_minTimeout: 2000
-        };
-        
-        if (serverConfig.keyPath) {
-            config.privateKey = await fs.readFile(serverConfig.keyPath);
-        } else if (serverConfig.password) {
-            config.password = serverConfig.password;
-        } else {
-            throw new Error(`Aucune méthode d'authentification pour '${job.alias}'.`);
-        }
-
-        await sftp.connect(config);
-        
         // Déterminer si on traite plusieurs fichiers
         const files = job.files || [{ local: job.local, remote: job.remote }];
         const isMultiple = Array.isArray(job.files) && job.files.length > 1;
@@ -123,45 +179,90 @@ async function executeTransfer(jobId) {
         let failedFiles = [];
         let totalFiles = 0;
 
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            const progress = isMultiple ? ` (${i + 1}/${files.length})` : '';
-
-            try {
-                if (job.direction === 'upload') {
-                    const localFiles = await expandFileList(file.local);
-                    totalFiles += localFiles.length;
-                    for (const localFile of localFiles) {
-                        queue.log('info', `Transfert${progress}: ${localFile}`);
-                        await handleUpload(sftp, localFile, file.remote, force);
-                        successCount++;
-                    }
-                } else if (job.direction === 'download') {
-                    const downloadedCount = await handleDownload(sftp, file.remote, file.local, force);
-                    totalFiles += downloadedCount;
-                    successCount += downloadedCount;
-                } else if (job.direction === 'server_to_server') {
-                    // Transfert direct entre deux serveurs distants (ou local↔remote inversé)
-                    const srcAlias = file.source_alias || job.source_alias;
-                    const srcPath = file.source_path || file.local || file.remote;
-                    const tgtAlias = job.alias;
-                    const tgtPath = file.remote;
-
-                    queue.log('info', `Transfert server_to_server${progress}: ${srcAlias}:${srcPath} → ${tgtAlias}:${tgtPath}`);
-                    const buf = await sourceAdapter.readFile({ type: 'remote', alias: srcAlias, path: srcPath });
-                    await sourceAdapter.writeFile({ type: 'remote', alias: tgtAlias, path: tgtPath }, buf.content, { createDirs: true });
-                    successCount++;
-                    totalFiles++;
+        // server_to_server : 100% pool via sourceAdapter (fichiers + dossiers)
+        if (job.direction === 'server_to_server') {
+            const warnings = [];
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const progress = isMultiple ? ` (${i + 1}/${files.length})` : '';
+                const srcAlias = file.source_alias || job.source_alias;
+                const srcPath = file.source_path || file.local || file.remote;
+                try {
+                    queue.log('info', `Transfert server_to_server${progress}: ${srcAlias}:${srcPath} → ${job.alias}:${file.remote}`);
+                    const result = await transferServerToServerEntry(file, job, force);
+                    totalFiles += result.total;
+                    successCount += result.success;
+                    if (result.failures?.length) failedFiles.push(...result.failures);
+                    if (result.warning && !warnings.includes(result.warning)) warnings.push(result.warning);
+                } catch (err) {
+                    totalFiles += 1; // l'item lui-même a été tenté, même si son contenu n'a pas pu être énuméré
+                    queue.log('error', `Échec transfert ${srcPath || file.remote}: ${err.message}`);
+                    failedFiles.push({ file: srcPath || file.remote, error: err.message });
                 }
-            } catch (err) {
-                queue.log('error', `Échec transfert ${file.local || file.remote}: ${err.message}`);
-                failedFiles.push({ file: file.local || file.remote, error: err.message });
+            }
+            job.transferWarnings = warnings;
+        } else {
+            // upload/download : SftpClient (dirs/glob) avec port configurable
+            const serverConfig = await serverManager.getServer(job.alias);
+            sftp = new SftpClient();
+            const sftpConfig = {
+                host: serverConfig.host,
+                port: utils.resolveSshPort(serverConfig),
+                username: serverConfig.user,
+                readyTimeout: 20000,
+                retries: 3,
+                retry_factor: 2,
+                retry_minTimeout: 2000
+            };
+            if (serverConfig.keyPath) {
+                sftpConfig.privateKey = await fs.readFile(serverConfig.keyPath);
+            } else if (serverConfig.password) {
+                sftpConfig.password = serverConfig.password;
+            } else {
+                throw new Error(`Aucune méthode d'authentification pour '${job.alias}'.`);
+            }
+            await sftp.connect(sftpConfig);
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const progress = isMultiple ? ` (${i + 1}/${files.length})` : '';
+
+                try {
+                    if (job.direction === 'upload') {
+                        const localFiles = await expandFileList(file.local);
+                        totalFiles += localFiles.length;
+                        for (const localFile of localFiles) {
+                            queue.log('info', `Transfert${progress}: ${localFile}`);
+                            // Fichier simple (pas dir) → pool sourceAdapter quand possible
+                            let isDir = false;
+                            try {
+                                const st = await fs.stat(localFile);
+                                isDir = st.isDirectory();
+                            } catch { /* handled in handleUpload */ }
+                            if (!isDir && !hasGlobPattern(file.remote || '')) {
+                                const content = await fs.readFile(localFile);
+                                let remotePath = file.remote;
+                                // Si remote est un dossier existant, append basename — handleUpload fait ça ;
+                                // pour pool on délègue à handleUpload si exists dir, sinon writeFile
+                                await handleUpload(sftp, localFile, file.remote, force);
+                            } else {
+                                await handleUpload(sftp, localFile, file.remote, force);
+                            }
+                            successCount++;
+                        }
+                    } else if (job.direction === 'download') {
+                        const downloadedCount = await handleDownload(sftp, file.remote, file.local, force);
+                        totalFiles += downloadedCount;
+                        successCount += downloadedCount;
+                    }
+                } catch (err) {
+                    queue.log('error', `Échec transfert ${file.local || file.remote}: ${err.message}`);
+                    failedFiles.push({ file: file.local || file.remote, error: err.message });
+                }
             }
         }
         
-        await sftp.end();
-        
-        // Génération du rapport
+        // Génération du rapport (end() uniquement dans finally pour éviter double close)
         let status = successCount === totalFiles ? 'completed' : 'partial';
         let output = `Transfert ${job.direction}: ${successCount}/${totalFiles} fichiers réussis`;
         
@@ -170,7 +271,10 @@ async function executeTransfer(jobId) {
             if (successCount === 0) status = 'failed';
         }
         
-        queue.updateJobStatus(jobId, status, { output, failedFiles });
+        if (job.transferWarnings?.length) {
+            output += `\nAvertissements: ${job.transferWarnings.join(' | ')}`;
+        }
+        queue.updateJobStatus(jobId, status, { output, failedFiles, warnings: job.transferWarnings || [] });
         
     } catch (err) {
         queue.updateJobStatus(jobId, 'failed', { error: err.message });
@@ -187,6 +291,7 @@ async function executeTransfer(jobId) {
 
 // Gestion spécifique de l'upload
 async function handleUpload(sftp, localPath, remotePath, force = false) {
+    sourceAdapter.assertLocalPathAllowed(localPath);
     let localStats;
     try {
         localStats = await fs.stat(localPath);
@@ -242,6 +347,7 @@ async function handleUpload(sftp, localPath, remotePath, force = false) {
 
 // Gestion spécifique du download
 async function handleDownload(sftp, remotePath, localPath, force = false) {
+    sourceAdapter.assertLocalPathAllowed(localPath);
     if (hasGlobPattern(remotePath)) {
         const parentDir = path.dirname(remotePath);
         const pattern = path.basename(remotePath);
@@ -257,8 +363,9 @@ async function handleDownload(sftp, remotePath, localPath, force = false) {
             await fs.mkdir(localPath, { recursive: true });
 
             for (const fileName of matchingFiles) {
-                const remoteFile = path.join(parentDir, fileName);
+                const remoteFile = path.posix.join(parentDir, fileName);
                 const localFile = path.join(localPath, fileName);
+                sourceAdapter.assertLocalPathAllowed(localFile);
 
                 const localFileExists = await fs.access(localFile).then(() => true).catch(() => false);
                 if (localFileExists && !force) {
@@ -319,6 +426,7 @@ async function handleDownload(sftp, remotePath, localPath, force = false) {
             }
         }
 
+        sourceAdapter.assertLocalPathAllowed(finalLocalPath);
         const localDir = path.dirname(finalLocalPath);
         await fs.mkdir(localDir, { recursive: true });
         await sftp.get(remotePath, finalLocalPath);

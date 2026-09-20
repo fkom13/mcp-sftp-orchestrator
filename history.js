@@ -1,51 +1,5 @@
-import fs from 'fs/promises';
-import path from 'path';
-import config from './config.js';
-const HISTORY_FILE_PATH = path.join(config.dataDir, 'history.json');
-
-async function readHistory() {
-    try {
-        await fs.access(HISTORY_FILE_PATH);
-        const data = await fs.readFile(HISTORY_FILE_PATH, 'utf-8');
-        return JSON.parse(data);
-    } catch (error) {
-        return [];
-    }
-}
-
-async function writeHistory(history) {
-    try {
-        await fs.writeFile(HISTORY_FILE_PATH, JSON.stringify(history, null, 2));
-    } catch (error) {
-        // Silently fail or log if possible, but don't crash
-        if (process.env.MCP_DEBUG === 'true') {
-            console.error(`[ERROR] Failed to write history: ${error.message}`);
-        }
-    }
-}
-
-async function logTask(jobDetails) {
-    const history = await readHistory();
-    const logEntry = {
-        jobId: jobDetails.id,
-        timestamp: new Date().toISOString(),
-        type: jobDetails.type,
-        alias: jobDetails.alias,
-        command: jobDetails.type === 'ssh' ? jobDetails.cmd : `${jobDetails.direction} ${jobDetails.local} -> ${jobDetails.remote}`
-    };
-    history.unshift(logEntry); // Ajoute au début
-    if (history.length > 500) { // Garde les 500 dernières commandes
-        history.pop();
-    }
-    await writeHistory(history);
-}
-
-async function getHistory(filters = {}) {
-    let history = await readHistory();
-    if (filters.alias) {
-        history = history.filter(log => log.alias === filters.alias);
-    }
-    return history;
-}
-
-export default { logTask, getHistory };
+import path from 'path'; import config from './config.js'; import jsonStore from './atomicJsonStore.js';
+const HISTORY_FILE_PATH=path.join(config.dataDir,'history.json');
+async function logTask(jobDetails){const logEntry={jobId:jobDetails.id,timestamp:new Date().toISOString(),type:jobDetails.type,alias:jobDetails.alias,command:jobDetails.type==='ssh'?jobDetails.cmd:`${jobDetails.direction} ${jobDetails.local} -> ${jobDetails.remote}`}; try{await jsonStore.updateJson(HISTORY_FILE_PATH,[],h=>{h.unshift(logEntry);if(h.length>500)h.length=500;return h;});}catch(error){if(process.env.MCP_DEBUG==='true')console.error(`[ERROR] Failed to write history: ${error.message}`);}}
+async function getHistory(filters={}){let h=await jsonStore.readJson(HISTORY_FILE_PATH,[]);if(filters.alias)h=h.filter(x=>x.alias===filters.alias);return h;}
+export default {logTask,getHistory};

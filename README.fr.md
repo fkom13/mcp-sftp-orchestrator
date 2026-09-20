@@ -1,276 +1,273 @@
 # 🚀 MCP Orchestrator — Serveur d'orchestration SSH/SFTP
 
-**Version** : 11.3.0  
+> **v11.8.0 Security Refresh** — Les 82 tools publient désormais les annotations MCP standard. `infra_overview` reste léger sans argument, mais `infra_overview { alias: "..." }` effectue une découverte live et corrèle Nginx/domaines, ports, Docker/Compose et services. Voir `CHANGELOG.md`.
+
+
+**Version** : 11.8.0  
+**Tools** : 82  
 **License** : MIT  
-**Node** : >= 18.0.0
+**Node** : >= 18.0.0  
+**Changelog** : [CHANGELOG.md](./CHANGELOG.md)
 
-Un serveur MCP (Model Context Protocol) qui donne à un agent IA la capacité d'exécuter des commandes SSH, des transferts SFTP, et du monitoring sur des serveurs distants. File d'attente persistante, pool de connexions SSH, exécution hybride synchrone/asynchrone.
+Serveur MCP (Model Context Protocol, transport **stdio**) qui donne à un agent IA la capacité d’orchestrer un parc de serveurs : SSH, SFTP, édition de fichiers locale/remote (hash-safe), diffs cross-server, shell PTY, snapshots d’infra, notes de protocole, **projets**, **sessions de travail**, inventaire, trust SSH (pubkey), groupes d’alias et audit parc.
 
-### ✨ Fonctionnalités clés
-- **63 outils MCP** — SSH, SFTP, fichiers, monitoring, snapshots, tunnels
-- **Sécurité intégrée** — Blocklist de commandes, allowlist de ports, hash protection
-- **Multi-serveur** — `task_exec {alias:["vps1","vps2"]}` ou `alias:"all"}`
-- **Persistance** — tmux + file d'attente = sessions qui survivent aux crashs
-- **Snapshots** — Versionning dédupliqué de vos fichiers critiques
-- **Tunnels SSH** — Local, Remote, SOCKS5 avec allowlist sécurisée
-- **Guide IA** — Manuel intégré pour l'agent (section:index/workflows/audit/security)
+---
+
+## ✨ Points forts (v11.6)
+
+| Domaine | Capacité |
+|---------|----------|
+| **Exécution** | `task_exec` multi-serveur / `group:oci` / dry-run destructif / force |
+| **Fichiers** | `file_read` / `file_edit` (chirurgical) / `file_write` + hash + dryRun + backup |
+| **Parc** | notes, `infra_audit`, `fleet_status`, `server_inventory` |
+| **Projets** | registre local↔remote + `project_diff` |
+| **Travail** | `work_start` → edits → `work_end` (note d’intervention auto) |
+| **Trust** | `ssh_authorize_key` (pubkey only, dry_run par défaut) |
+| **Sécu** | secrets masqués, RO global + **RO par alias**, blocklist, pool SSH robuste |
 
 ---
 
 ## 📦 Installation
 
-### Via npx (recommandé)
-```bash
-npx @fkom13/mcp-sftp-orchestrator
-```
-
-### Via git
 ```bash
 git clone https://github.com/fkom13/mcp-sftp-orchestrator.git
-cd mcp-sftp-orchestrator
+cd sftp-mcp   # ou tools/sftp-mcp
 npm install
 cp .env.example .env
-# Éditer .env avec vos chemins
+# Éditer MCP_DATA_DIR et chemins de clés
 ```
 
-Prérequis : Node.js >= 18.0.0
+Prérequis : **Node.js >= 18**
 
 ---
 
-## ⚙️ Configuration (.env)
+## ⚙️ Configuration (`.env`)
 
-Toutes les variables sont optionnelles. Les valeurs par défaut sont conçues pour un usage standard.
+Toutes les variables sont optionnelles.
 
 | Variable | Défaut | Description |
 |----------|--------|-------------|
-| `MCP_DATA_DIR` | `~/.config/mcp-orchestrator` | Dossier où sont stockés `servers.json`, `apis.json`, `queue.json`, `history.json` |
-| `MCP_SYNC_TIMEOUT_S` | `120` | Délai en secondes avant qu'une tâche passe en arrière-plan (retour immédiat au client, tâche continue) |
-| `MCP_DEFAULT_CMD_TIMEOUT_S` | `600` | Timeout SSH par défaut en secondes. `0` = aucune limite |
-| `MCP_INTERACTIVE_CMD_TIMEOUT_S` | `300` | Timeout pour les commandes interactives. `0` = aucune limite |
-| `MCP_MAX_WAIT_TIMEOUT_S` | `600` | Timeout maximum pour l'outil `task_wait` |
-| `MAX_CONNECTIONS_PER_SERVER` | `5` | Nombre max de connexions SSH simultanées par serveur |
-| `MIN_CONNECTIONS_PER_SERVER` | `1` | Nombre min de connexions SSH maintenues par serveur |
-| `IDLE_TIMEOUT` | `300000` | Délai en ms avant fermeture d'une connexion SSH inactive (5 min) |
-| `KEEP_ALIVE_INTERVAL` | `30000` | Intervalle keepalive SSH en ms (30s) |
-| `MAX_QUEUE_SIZE` | `1000` | Nombre maximum de jobs dans la file d'attente |
-| `SAVE_INTERVAL` | `5000` | Intervalle de sauvegarde de la queue sur disque en ms (5s) |
-| `MCP_DEBUG` | `false` | `true` pour activer les logs détaillés dans stderr |
+| `MCP_DATA_DIR` | `~/.config/mcp-orchestrator` | Dossier data (JSON, snapshots, projets…) |
+| `MCP_SYNC_TIMEOUT_S` | `120` | Délai (s) avant passage d’une tâche en arrière-plan |
+| `MCP_DEFAULT_CMD_TIMEOUT_S` | `600` | Timeout SSH commande (s). `0` = infini |
+| `MCP_INTERACTIVE_CMD_TIMEOUT_S` | `300` | Timeout interactif (s). `0` = infini |
+| `MCP_MAX_WAIT_TIMEOUT_S` | `600` | Timeout max `task_wait` (s) |
+| `MAX_CONNECTIONS_PER_SERVER` | `5` | Pool SSH max / serveur |
+| `MIN_CONNECTIONS_PER_SERVER` | `1` | Pool SSH min / serveur |
+| `IDLE_TIMEOUT` | `300000` | Fermeture connexion inactive (ms) |
+| `KEEP_ALIVE_INTERVAL` | `30000` | Keepalive SSH (ms) |
+| `MAX_QUEUE_SIZE` | `1000` | Taille max queue jobs |
+| `SAVE_INTERVAL` | `5000` | Autosave queue (ms) |
+| `MCP_ALLOWED_ROOTS` | _(vide)_ | Racines autorisées pour paths locaux (CSV) |
+| `MCP_READONLY` | `false` | `1` = refuse écritures / exec mutantes (global) |
+| `MCP_COMPACT` | `false` | `1` = réponses tronquées (tokens agent) |
+| `MCP_DEBUG` | `false` | Logs détaillés stderr |
+
+### Fichiers sous `MCP_DATA_DIR`
+
+| Fichier | Contenu |
+|---------|---------|
+| `servers.json` | Alias SSH (`host`, `user`, `keyPath`/`password`, `port?`, `readonly?`) |
+| `apis.json` | Catalogue APIs (secrets masqués en lecture tools) |
+| `queue.json` / `queue.backup.json` | Jobs |
+| `history.json` | Historique tâches |
+| `server_notes.json` | Protocoles / notes par serveur |
+| `server_groups.json` | Groupes d’alias |
+| `projects.json` | Registre projets |
+| `work_sessions.json` | Sessions de travail |
+| `policies.json` | Blocklist commandes |
+| `tunnels.json` / `tunnel_allowlist.json` | Tunnels SSH |
+| `infra_snapshots/` | Snapshots content-addressable |
 
 ---
 
-## 🔌 Connexion au client MCP (OpenCode, Claude Desktop, etc.)
+## 🔌 Connexion client MCP
+
+### Grok / config.toml
+
+```toml
+[mcp_servers.orchestrator]
+command = "node"
+args = ["/chemin/absolu/sftp-mcp/server.js"]
+# optionnel:
+# env = { MCP_DATA_DIR = "/chemin/absolu/sftp-mcp/data" }
+```
+
+### OpenCode / Claude Desktop (JSON)
 
 ```json
 {
   "mcpServers": {
     "orchestrator": {
       "command": "node",
-      "args": ["/chemin/vers/sftp-mcp/server.js"],
+      "args": ["/chemin/absolu/sftp-mcp/server.js"],
       "env": {
-        "MCP_DATA_DIR": "/chemin/vers/sftp-mcp/data"
+        "MCP_DATA_DIR": "/chemin/absolu/sftp-mcp/data"
       }
     }
   }
 }
 ```
 
----
-
-## 🧰 Référence des Outils (63 outils)
-
-### Aide & Diagnostic
-| Outil | Description |
-|-------|-------------|
-| `help` | Guide complet : liste des outils, variables .env, schémas des paramètres |
-| `guide` | Manuel IA : workflows, cheatsheet, audit, sécurité |
-| `system_diagnostics` | Diagnostic complet (queue, pool, serveurs, APIs) |
-
-### Gestion des Serveurs
-| Outil | Description |
-|-------|-------------|
-| `server_add` | Ajouter/modifier un alias de serveur |
-| `server_list` | Lister tous les serveurs configurés |
-| `server_remove` | Supprimer un alias de serveur |
-| `infra_overview` | Vue synthétique du parc (rôles, services, warnings) |
-| `server_note_set/get/list/remove` | Contexte documenté de chaque serveur |
-
-### Sécurité (Blocklist)
-| Outil | Description |
-|-------|-------------|
-| `policy_blocklist_list` | Lister les commandes bloquées |
-| `policy_blocklist_add` | Ajouter un pattern à la blocklist |
-| `policy_blocklist_remove` | Retirer un pattern de la blocklist |
-
-### Exécution de Tâches
-| Outil | Description |
-|-------|-------------|
-| `task_exec` | SSH one-shot. Supporte `alias:["vps1","vps2"]` ou `alias:"all"` |
-| `task_exec_interactive` | SSH avec gestion des prompts interactifs |
-| `task_exec_sequence` | Séquence de commandes SSH |
-| `task_transfer` | Transfert SFTP. Supporte `server_to_server` direct |
-| `task_transfer_multi` | Transferts multiples avec patterns glob |
-
-### Monitoring
-| Outil | Description |
-|-------|-------------|
-| `get_system_resources` | CPU, RAM, Disque d'un serveur |
-| `get_services_status` | Statut systemd, Docker, PM2 (graceful fallback) |
-| `get_fail2ban_status` | Statut Fail2Ban |
-| `check_api_health` | Test HTTP direct |
-
-### Logs
-| Outil | Description |
-|-------|-------------|
-| `get_pm2_logs` | Logs PM2 |
-| `get_docker_logs` | Logs Docker |
-| `tail_file` | Dernières lignes d'un fichier distant |
-
-### Opérations Fichiers (Local + Remote)
-| Outil | Description |
-|-------|-------------|
-| `file_read` | Lire fichier + hash SHA-256 (protection édition) |
-| `file_write` | Créer/écraser avec `dryRun` et `backup` |
-| `file_edit` | Édition chirurgicale ou complète + protection hash |
-
-### Comparaison & Drift
-| Outil | Description |
-|-------|-------------|
-| `diff_files` | Comparer 2 fichiers (local/remote, cross-server) |
-| `diff_folders` | Comparer 2 dossiers |
-| `compare_all_sources` | Détecter les drifts sur N serveurs |
-
-### Sessions Shell Persistantes
-| Outil | Description |
-|-------|-------------|
-| `shell_create` | Ouvrir une session shell (cd/env persistent) |
-| `shell_exec` | Exécuter dans une session existante |
-| `shell_list` / `shell_close` | Lister/fermer les sessions |
-
-### tmux (Sessions Terminal Survivantes)
-| Outil | Description |
-|-------|-------------|
-| `tmux_create` | Créer une session tmux persistante |
-| `tmux_exec` | Envoyer une commande dans une session |
-| `tmux_read` | Lire le buffer |
-| `tmux_list` / `tmux_kill` | Lister/tuer les sessions |
-
-### Tunnels SSH
-| Outil | Description |
-|-------|-------------|
-| `tunnel_create` | Tunnel local/remote/SOCKS5, persistant via tmux |
-| `tunnel_list` | Lister les tunnels actifs |
-| `tunnel_close` | Fermer un tunnel |
-| `tunnel_allowlist_add/remove` | Gérer les ports autorisés |
-
-### Snapshots (Versioning Fichiers)
-| Outil | Description |
-|-------|-------------|
-| `snapshot_create` | Capturer l'état de fichiers avec déduplication |
-| `snapshot_list` | Lister les snapshots |
-| `snapshot_diff` | Comparer 2 snapshots |
-| `snapshot_restore` | Restaurer (dryRun par défaut) |
-| `snapshot_delete` | Supprimer + nettoyage orphelins |
-
-### File d'Attente & Suivi
-| Outil | Description |
-|-------|-------------|
-| `task_queue` | Voir toutes les tâches en cours |
-| `task_status` | Détail d'une tâche |
-| `task_history` | Historique filtrable |
-| `task_retry` | Relancer une tâche échouée |
-| `task_wait` | Attendre une tâche arrière-plan |
-| `task_logs` | Logs internes MCP |
-| `queue_stats` / `pool_stats` | Statistiques queue et pool SSH |
-
-### Gestion des APIs
-| Outil | Description |
-|-------|-------------|
-| `api_add` / `api_list` / `api_remove` | Catalogue d'APIs |
-| `api_check` | Test de santé via SSH + curl |
+Après modification du code : recharger le serveur MCP (`/mcps` → `r` ou restart session). Vérifier `system_diagnostics` → `version: "11.8.0"`.
 
 ---
 
-## 📖 Exemples d'utilisation
+## 🧰 Référence des outils (82)
 
-### Multi-serveur
-```bash
-# Une commande sur plusieurs serveurs
-task_exec {alias:["vps1","vps2","vps3"], cmd:"uptime"}
+### Diagnostic & audit
+| Outil | Description |
+|-------|-------------|
+| `help` | Guide outils + .env + astuces |
+| `guide` | Manuel IA (workflows, cheatsheet, pitfalls, audit, security) |
+| `system_diagnostics` | Queue, pool, serveurs/APIs **masqués**, version, readOnly |
+| `infra_audit` | Synthèse parc + projets + notes + crashed |
+| `infra_overview` | Serveurs + notes (vue légère) |
+| `fleet_status` | Ping SSH parallèle (latence, load, disk) |
+| `server_inventory` | Inventaire léger (pm2/docker/disk/home, cache 10 min) |
 
-# Tout le parc
-task_exec {alias:"all", cmd:"df -h /"}
+### Serveurs & groupes
+| Outil | Description |
+|-------|-------------|
+| `server_add` | CRUD alias (`keyPath` ou `password`, `port`, **`readonly`**) |
+| `server_list` | Liste (passwords masqués) |
+| `server_remove` | Supprime un alias |
+| `server_group_list/set/remove` | Groupes (`oci`, `contabo`…). Usage : `group:oci` ou nom de groupe |
+
+### Projets (v11.6)
+| Outil | Description |
+|-------|-------------|
+| `project_list` / `project_get` / `project_set` / `project_remove` | Registre |
+| `project_resolve` | → `{ local, remote, ignore, runtime }` |
+| `project_diff` | Diff local↔remote du projet |
+
+Exemple `project_set` :
+
+```json
+{
+  "name": "p-image",
+  "local": { "path": "/home/.../dev-serveur/p-image" },
+  "servers": {
+    "prod": {
+      "alias": "fkomprodmini2_prod",
+      "path": "/home/ubuntu/p-image",
+      "runtime": { "pm2": "p-image", "port": 5002 },
+      "url": "https://pruna.esprit-artificiel.com"
+    }
+  },
+  "ignore": ["node_modules", ".git", "data"]
+}
 ```
 
-### Tunnel SOCKS5 (proxy)
-```bash
-tunnel_create {name:"proxy", type:"socks", listen_port:1080, via:"vps_paris"}
-# → Navigateur → SOCKS5 127.0.0.1:1080 → VPS Paris
+### Sessions de travail (v11.6)
+| Outil | Description |
+|-------|-------------|
+| `work_start` | Ouvre un journal (`alias`, `project`, `tag`, snapshot optionnel) |
+| `work_log` | Event (`file_edit`, `task_exec`, …) |
+| `work_list` | Sessions actives (+ historique) |
+| `work_end` | Clôture + `server_note` `last_intervention` |
+
+### Trust SSH (v11.6)
+| Outil | Description |
+|-------|-------------|
+| `ssh_authorize_key` | Ajoute une **pubkey** dans `authorized_keys` distant. `dry_run` défaut. Sources : `string` \| `local_path` \| `alias` |
+
+```json
+{
+  "target_alias": "fkomprodmini1_prod",
+  "source": { "type": "alias", "alias": "vps_contabo" },
+  "comment": "fleet-from-contabo",
+  "dry_run": true
+}
 ```
 
-### Tunnel local (accès service distant)
-```bash
-tunnel_create {name:"crm", type:"local", listen_port:8080, target:"127.0.0.1:3100", via:"vps_prod"}
-# → http://localhost:8080 → CRM en production
+### Policies
+| Outil | Description |
+|-------|-------------|
+| `policy_blocklist_list/add/remove` | Blocklist commandes (aussi appliquée à shell + sequences) |
+
+### Catalogue API
+| Outil | Description |
+|-------|-------------|
+| `api_add` / `api_list` / `api_remove` / `api_check` | Monitoring (clés masquées en list) |
+
+### Exécution de tâches
+| Outil | Description |
+|-------|-------------|
+| `task_exec` | SSH ; alias \| tableau \| `all` \| `group:x` ; dry_run/force destructif |
+| `task_exec_interactive` | Prompts yes/no, menus |
+| `task_exec_sequence` | Séquence sur un serveur (policy par étape) |
+| `task_transfer` | SFTP upload/download/`server_to_server` |
+| `task_transfer_multi` | Multi + globs |
+
+### Files / Diff / Shell / Snapshots
+| Famille | Outils |
+|---------|--------|
+| Files | `file_read`, `file_write`, `file_edit` |
+| Diff | `diff_files`, `diff_folders`, `compare_all_sources` |
+| Shell | `shell_create`, `shell_exec` (+ `skip_policy`), `shell_list`, `shell_close` |
+| Snapshots | `snapshot_create/list/diff/restore/delete` |
+
+**Édition safe** : `file_read` → hash → `file_edit` + `expectedHash` (+ `dryRun` / `backup`).
+
+### Notes serveur
+| Outil | Description |
+|-------|-------------|
+| `server_note_set/get/list/remove` | Protocole (description, services, warnings, intervention) |
+
+### Monitoring & logs
+| Outil | Description |
+|-------|-------------|
+| `get_system_resources` | CPU / RAM / disque |
+| `get_services_status` | systemd / Docker / PM2 |
+| `get_fail2ban_status` | Fail2Ban |
+| `check_api_health` | HTTP via SSH+curl |
+| `get_pm2_logs` / `get_docker_logs` / `tail_file` | Logs |
+
+### Queue
+| Outil | Description |
+|-------|-------------|
+| `task_queue` / `task_status` / `task_history` / `task_wait` / `task_logs` | Suivi |
+| `task_retry` / `task_retry_all` | Relance |
+| `task_purge` | Purge (dry_run défaut) |
+| `queue_stats` / `pool_stats` | Stats |
+
+### Tmux & tunnels
+| Outil | Description |
+|-------|-------------|
+| `tmux_create/exec/read/list/kill` | Sessions tmux distantes |
+| `tunnel_create/list/close` | Tunnels SSH local/remote/socks |
+| `tunnel_allowlist_add/remove` | Ports autorisés pour tunnels |
+
+---
+
+## 📖 Workflows agent recommandés
+
+### Début de session
+```
+infra_audit  (ou infra_overview)
+fleet_status
+project_list / project_resolve
 ```
 
-### Tunnel remote (exposer un service local)
-```bash
-tunnel_create {name:"dev", type:"remote", listen_port:9090, target:"127.0.0.1:3000", via:"vps", source:"vps_prod", key_path:"/home/user/.ssh/vps.key"}
-# → vps_prod:9090 → votre machine locale:3000
+### Chantier sur un projet
+```
+work_start { project: "p-image", alias: "fkomprodmini2_prod", tag: "fix-x", message: "…" }
+file_read → file_edit (expectedHash, dryRun puis apply)
+work_log { type: "file_edit", path: "…" }
+work_end { summary: "…" }   → note serveur mise à jour
+project_diff { name: "p-image" }
 ```
 
-### Session tmux persistante
-```bash
-tmux_create {alias:"vps", name:"build", start_cmd:"npm run build"}
-tmux_read {alias:"vps", session:"build"}
-tmux_kill {alias:"vps", session:"build"}
+### Commandes longues
+```
+task_exec { timeout: 0, … }  → si > syncTimeout → task_wait { id }
 ```
 
-### Blocklist (sécurité)
-```bash
-# Voir les commandes bloquées
-policy_blocklist_list
-# → ["rm -rf /", "mkfs*", ...]
-
-# Contournement conscient
-task_exec {alias:"vps", cmd:"rm -rf /tmp/cache", skip_policy:true}
+### Cibles multi-serveurs
 ```
-
-### Édition de fichier sécurisée
-```bash
-# Lire + hash
-file_read {source:{type:"remote", alias:"vps", path:"/etc/nginx/nginx.conf"}}
-# → content + hash
-
-# Éditer avec protection
-file_edit {source:{type:"remote", alias:"vps", path:"/etc/nginx/nginx.conf"},
-           oldString:"worker_connections 768;",
-           newString:"worker_connections 1024;",
-           expectedHash:"abc123...",
-           backup:true}
-
-# Preview sans écrire
-file_edit {source:{type:"remote", alias:"vps", path:"/etc/nginx/nginx.conf"},
-           oldString:"worker_connections 768;",
-           newString:"worker_connections 1024;",
-           dryRun:true}
-```
-
-### Snapshot avant modif risquée
-```bash
-# Avant
-snapshot_create {source:{type:"remote", alias:"vps"}, paths:["/etc/nginx/"], tag:"before-fix"}
-
-# Après si problème
-snapshot_restore {snapshotId:"...", target:{type:"remote", alias:"vps"}, dryRun:false, force:true}
-```
-
-### Drift detection (comparaison multi-serveur)
-```bash
-compare_all_sources {sources:[
-  {type:"remote", alias:"vps1", path:"/etc/nginx/nginx.conf", label:"prod"},
-  {type:"remote", alias:"vps2", path:"/etc/nginx/nginx.conf", label:"staging"}
-]}
+task_exec { alias: "group:oci", cmd: "hostname" }
+task_exec { alias: "all", cmd: "uptime" }
 ```
 
 ---
@@ -280,87 +277,77 @@ compare_all_sources {sources:[
 ```
 Client MCP (stdio)
     │
-server.js ─── 63 outils MCP enregistrés
+server.js ─── 82 tools
     │
-    ├── queue.js ─────── File d'attente persistante (JSON + backup)
-    ├── ssh.js ───────── Exécution SSH (pool + connexions dédiées)
-    ├── sftp.js ──────── Transferts SFTP (upload/download/multi)
-    ├── sshPool.js ───── Pool de connexions SSH persistantes
-    ├── servers.js ───── CRUD alias de serveurs
-    ├── apis.js ──────── CRUD catalogue d'APIs
-    ├── history.js ───── Historique des tâches
-    ├── config.js ────── Configuration centralisée
-    ├── utils.js ─────── Utilitaires (escapeShellArg)
-    ├── fileOps.js ───── Opérations fichiers (read/write/edit)
-    ├── diffEngine.js ── Moteur de diff (fichiers/dossiers/sources)
-    ├── compareEngine.js ─ Comparaison multi-sources
-    ├── diffFormatter.js ─ Formatage des diffs
-    ├── sourceAdapter.js ─ Abstraction local/remote
-    ├── shellSessions.js ─ Sessions shell persistantes
-    ├── snapshotManager.js ─ Snapshots versionnés
-    ├── notes.js ──────── Contexte documenté des serveurs
-    ├── policies.js ──── Blocklist de commandes
-    ├── tunnels.js ────── Tunnels SSH (local/remote/SOCKS)
-    ├── guide.js ──────── Manuel IA intégré
-    └── diagnose.js ───── Diagnostics
+    ├── queue.js          File d’attente persistante + purge/retry
+    ├── ssh.js / sshPool  Exécution + pool (retry safe, port configurable)
+    ├── sftp.js           Transferts (server_to_server via sourceAdapter/pool)
+    ├── sourceAdapter.js  Local fs | remote SFTP pool
+    ├── fileOps.js        Read/write/edit + hash + dryRun + backup
+    ├── diffEngine.js / compareEngine.js / diffFormatter.js
+    ├── shellSessions.js  PTY persistants + policy
+    ├── snapshotManager.js
+    ├── projects.js / workSession.js / inventory.js / groups.js / fleet.js
+    ├── sshTrust.js       authorized_keys (pubkey only)
+    ├── servers.js / apis.js / notes.js / policies.js / tunnels.js
+    ├── history.js / guide.js / config.js / utils.js
 ```
 
-### Cycle de vie d'un job
+### Cycle de vie d’un job
 
 ```
-pending → running → completed / failed
-                      ↓ (si redémarrage)
-                    crashed → retry → pending
-```
-
----
-
-## 📚 Manuel IA intégré (guide)
-
-L'orchestrator embarque un manuel interactif pour l'agent IA :
-
-```bash
-guide section:index       # Table des matières
-guide section:workflows   # Recettes copier-coller
-guide section:cheatsheet  # Table outil → usage
-guide section:audit       # Audit complet du parc en 8 étapes
-guide section:security    # Blocklist + tunnels
-guide section:pitfalls    # Pièges à éviter
+pending → running → completed | failed | partial
+                      ↓ (redémarrage MCP pendant running)
+                    crashed → task_retry → pending
 ```
 
 ---
 
 ## 🔒 Sécurité
 
-- **Command Blocklist** : `rm -rf /`, `mkfs*`, fork bombs et autres commandes destructrices sont bloquées par défaut
-- **Contournement conscient** : `skip_policy: true` pour forcer l'exécution
-- **Allowlist de ports tunnels** : seuls les ports explicitement autorisés peuvent être utilisés
-- **`escapeShellArg()`** : toutes les URLs et chemins sont échappés avant passage à curl/shell
-- **Détection de secrets en clair** : warning au démarrage si mots de passe/clés API en clair
-- **Snapshots avant modif** : `backup:true` sur file_edit/file_write pour annuler une erreur
-- **Recommandation** : clés SSH (pas de mots de passe), stockez les secrets dans Vaultwarden
+| Mécanisme | Détail |
+|-----------|--------|
+| Secrets | Masqués en `api_list` / diagnostics (`***` + 4 derniers car.) |
+| Shell escape | `escapeShellArg` sur curl, logs, chemins |
+| Blocklist | `policies.json` ; shell + sequence inclus ; `skip_policy` pour forcer |
+| RO global | `MCP_READONLY=1` |
+| RO alias | `"readonly": true` dans `servers.json` |
+| Destructif | `task_exec` dry-run si pattern dangereux sans `force:true` |
+| Trust | Pubkey only ; dry_run par défaut |
+| Clés | Préférer `keyPath` SSH ; Vaultwarden pour secrets API |
 
 ---
 
 ## 🧪 Tests
 
 ```bash
-node diagnose.js        # Diagnostic complet
-node test_mcp.js        # Test smoke MCP
-node test_features.js   # Tests unitaires (queue, pool, glob, prompts, crash)
+npm test:unit    # p0 + p1 + p16 (43 tests)
+npm test         # unit + smoke MCP + features
+node diagnose.js # diagnostic local optionnel
 ```
+
+| Fichier | Couverture |
+|---------|------------|
+| `test_p0_unit.js` | utils, policies, redact, timeouts, version |
+| `test_p1_unit.js` | groups, purge, destructive, RO env |
+| `test_p16_unit.js` | projects, work session, compact, sshTrust |
+| `test_mcp.js` | smoke SDK |
+| `test_features.js` | queue / pool / globs / prompts |
 
 ---
 
-## 🛣️ Roadmap
+## 🛣️ Versions récentes
 
-| Version | Changement |
-|---------|------------|
-| 10.0.0 | Nouveaux outils : file_read/write/edit, diff, snapshots, shell, notes |
-| 10.4.0 | server_to_server, help avec schémas, guide audit |
-| 11.0.0 | Command Blocklist, Multi-host (`alias:"all"`), tmux |
-| 11.3.0 | Tunnels SSH (local/remote/SOCKS5), allowlist, fix ssh2 stderr |
-| 12.0.0 (planifié) | Auto-setup clés tunnels, webhooks, dashboard statique |
+| Version | Contenu | Snapshot gencodedoc |
+|---------|---------|---------------------|
+| **11.6.1** | Hardening multi-agent: RO transversal, server-to-server dossiers/force, allowed roots anti-symlink, quoting shell/tmux, queue + JSON stores atomiques | — |
+| **11.6.0** | Projets, work sessions, inventory, ssh_authorize_key, RO alias, compact | **#23** (final docs) |
+| 11.4.0 | fleet, infra_audit, groups, retry_all, purge, pool rewrite | #21 |
+| 11.3.0 | Secrets mask, policy shell/seq, port SSH, wait partial | #20 |
+| 10.4–10.0 | file ops, diff, shell, snapshots, notes, guide | #17–19 |
+| 9.x / 8.x | SFTP force, timeouts, interactif, sécu de base | — |
+
+Détail : **[CHANGELOG.md](./CHANGELOG.md)** · plans historiques : `ROADMAP.md`, `ROADMAP_EXTENDED.md`.
 
 ---
 

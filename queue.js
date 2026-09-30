@@ -6,7 +6,11 @@ import config from './config.js';
 const QUEUE_FILE = path.join(config.dataDir, 'queue.json');
 const QUEUE_BACKUP = path.join(config.dataDir, 'queue.backup.json');
 const SAVE_INTERVAL = config.saveInterval || 5000;
-const MAX_QUEUE_SIZE = config.maxQueueSize || 1000;
+const MAX_ACTIVE_JOBS = config.maxActiveJobs || config.maxQueueSize || 1000;
+const MAX_TERMINAL_HISTORY = config.maxTaskHistory || 300;
+const TERMINAL_RETENTION = config.historyRetention || 2678400000;
+const ACTIVE_STATUSES = new Set(['pending', 'running']);
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'crashed', 'partial']);
 
 // ✅ Mode silencieux par défaut (logs désactivés sauf si MCP_DEBUG=true)
 const SILENT_MODE = process.env.MCP_DEBUG !== 'true';
@@ -22,6 +26,53 @@ let dirtyRevision = 0;
 function markDirty() {
     isDirty = true;
     dirtyRevision++;
+}
+
+function getJobTimestamp(job) {
+    const raw = job.updatedAt || job.completedAt || job.failedAt || job.crashedAt || job.createdAt;
+    const ts = raw ? new Date(raw).getTime() : 0;
+    return Number.isFinite(ts) ? ts : 0;
+}
+
+function getActiveCount() {
+    return Object.values(jobQueue).filter(job => ACTIVE_STATUSES.has(job.status)).length;
+}
+
+function assertActiveCapacity() {
+    const activeCount = getActiveCount();
+    if (activeCount >= MAX_ACTIVE_JOBS) {
+        throw new Error(`Queue active pleine (${MAX_ACTIVE_JOBS} tâches max)`);
+    }
+}
+
+function rotateTerminalHistory() {
+    const now = Date.now();
+    const terminalJobs = Object.entries(jobQueue)
+        .filter(([, job]) => TERMINAL_STATUSES.has(job.status))
+        .sort((a, b) => getJobTimestamp(b[1]) - getJobTimestamp(a[1]));
+
+    const keepIds = new Set(
+        terminalJobs
+            .filter(([, job]) => {
+                const ts = getJobTimestamp(job);
+                return !TERMINAL_RETENTION || !ts || now - ts <= TERMINAL_RETENTION;
+            })
+            .slice(0, MAX_TERMINAL_HISTORY)
+            .map(([id]) => id)
+    );
+
+    const toDelete = terminalJobs
+        .map(([id]) => id)
+        .filter(id => !keepIds.has(id));
+
+    for (const id of toDelete) delete jobQueue[id];
+
+    if (toDelete.length > 0) {
+        markDirty();
+        log('info', `${toDelete.length} tâche(s) terminale(s) retirée(s) par rotation d'historique`);
+    }
+
+    return toDelete.length;
 }
 
 // Charger la queue au démarrage
@@ -45,6 +96,7 @@ async function loadQueue() {
             jobQueue[id] = job;
         }
 
+        rotateTerminalHistory();
         log('info', `${Object.keys(jobQueue).length} tâches restaurées depuis la sauvegarde`);
     } catch (err) {
         if (err.code !== 'ENOENT') {
@@ -79,6 +131,7 @@ async function saveQueue() {
     saveLock = (async () => {
         isSaving = true;
         let tmpPath = null;
+        rotateTerminalHistory();
         const revisionAtStart = dirtyRevision;
         try {
             try {
@@ -87,18 +140,7 @@ async function saveQueue() {
                 // Ignorer si le fichier n'existe pas
             }
 
-            const now = Date.now();
-            const filteredQueue = {};
-
-            for (const [id, job] of Object.entries(jobQueue)) {
-                const age = now - new Date(job.createdAt).getTime();
-                const isRecent = age < 86400000;
-                const isActive = ['pending', 'running', 'crashed'].includes(job.status);
-
-                if (isActive || isRecent) {
-                    filteredQueue[id] = job;
-                }
-            }
+            const filteredQueue = { ...jobQueue };
 
             // Écriture atomique : un crash ne peut plus laisser queue.json tronqué.
             tmpPath = `${QUEUE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
@@ -160,13 +202,8 @@ function log(level, message) {
 }
 
 function addJob(details) {
-    if (Object.keys(jobQueue).length >= MAX_QUEUE_SIZE) {
-        cleanOldJobs();
-
-        if (Object.keys(jobQueue).length >= MAX_QUEUE_SIZE) {
-            throw new Error(`Queue pleine (${MAX_QUEUE_SIZE} tâches max)`);
-        }
-    }
+    rotateTerminalHistory();
+    assertActiveCapacity();
 
     const id = uuidv4().split('-')[0];
     const job = {
@@ -210,6 +247,9 @@ function updateJobStatus(id, status, data = {}) {
         }
 
         markDirty();
+        if (TERMINAL_STATUSES.has(status)) {
+            rotateTerminalHistory();
+        }
     }
 }
 
@@ -235,40 +275,7 @@ function getLogs(filter = {}) {
 }
 
 function cleanOldJobs() {
-    const now = Date.now();
-    const toDelete = [];
-    const MAX_AGE = 86400000;
-
-    for (const [id, job] of Object.entries(jobQueue)) {
-        const createdAt = job.createdAt ? new Date(job.createdAt).getTime() : now;
-        if (isNaN(createdAt)) {
-            log('warn', `Tâche ${id} a une date de création invalide, conservation`);
-            continue;
-        }
-
-        const age = now - createdAt;
-
-        if (age < 0) {
-            log('warn', `Tâche ${id} a une date dans le futur, conservation`);
-            continue;
-        }
-
-        const isOld = age > MAX_AGE;
-        const isCompleted = ['completed', 'failed'].includes(job.status);
-
-        if (isOld && isCompleted) {
-            toDelete.push(id);
-        }
-    }
-
-    for (const id of toDelete) {
-        delete jobQueue[id];
-    }
-
-    if (toDelete.length > 0) {
-        log('info', `${toDelete.length} vieilles tâches supprimées de la queue`);
-        markDirty();
-    }
+    return rotateTerminalHistory();
 }
 
 async function retryJob(id) {
@@ -284,6 +291,9 @@ async function retryJob(id) {
     if (job.retryCount >= job.maxRetries) {
         throw new Error(`La tâche ${id} a atteint le nombre max de tentatives (${job.maxRetries})`);
     }
+
+    rotateTerminalHistory();
+    assertActiveCapacity();
 
     const newJob = {
         ...job,
@@ -337,7 +347,7 @@ function purgeJobs(options = {}) {
     const now = Date.now();
     const maxAge = olderThanDays > 0 ? olderThanDays * 86400000 : 0;
 
-    const terminal = new Set(['completed', 'failed', 'crashed', 'partial']);
+    const terminal = TERMINAL_STATUSES;
     const toDelete = [];
 
     for (const [id, job] of Object.entries(jobQueue)) {
@@ -425,7 +435,9 @@ export default {
     getRetryableJobs,
     purgeJobs,
     getStats,
+    getActiveCount,
     cleanOldJobs,
+    rotateTerminalHistory,
     saveQueue,
     shutdown,
     init

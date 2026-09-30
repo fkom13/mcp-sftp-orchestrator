@@ -7,8 +7,8 @@
   "mcpName": "io.github.fkom13/mcp-sftp-orchestrator",
   "scripts": {
     "start": "node server.js",
-    "test": "node test_p0_unit.js && node test_p1_unit.js && node test_p16_unit.js && node test_hardening_1161.js && node test_atomic_store_1161.js && node test_queue_atomic_1161.js && node test_aix_117.js && node test_mcp_hardening_integration.js && node test_mcp.js && node test_features.js",
-    "test:unit": "node test_p0_unit.js && node test_p1_unit.js && node test_p16_unit.js",
+    "test": "node test_p0_unit.js && node test_p1_unit.js && node test_p16_unit.js && node test_queue_capacity.js && node test_hardening_1161.js && node test_atomic_store_1161.js && node test_queue_atomic_1161.js && node test_aix_117.js && node test_mcp_hardening_integration.js && node test_mcp.js && node test_features.js",
+    "test:unit": "node test_p0_unit.js && node test_p1_unit.js && node test_p16_unit.js && node test_queue_capacity.js",
     "test:integration": "node test_features.js"
   },
   "dependencies": {

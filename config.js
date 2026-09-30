@@ -44,7 +44,11 @@ const config = {
     compact: process.env.MCP_COMPACT === 'true' || process.env.MCP_COMPACT === '1',
     
     // Configuration Queue
+    // MAX_QUEUE_SIZE reste supporté pour compatibilité mais représente désormais
+    // la capacité ACTIVE (pending + running), pas la taille totale de l'historique.
     maxQueueSize: parseInt(process.env.MAX_QUEUE_SIZE || '1000', 10),
+    maxActiveJobs: parseInt(process.env.MAX_ACTIVE_JOBS || process.env.MAX_QUEUE_SIZE || '1000', 10),
+    maxTaskHistory: parseInt(process.env.MAX_TASK_HISTORY || '300', 10),
     saveInterval: parseInt(process.env.SAVE_INTERVAL || '5000', 10),
     historyRetention: parseInt(process.env.HISTORY_RETENTION || '2678400000', 10), // 31 jours
 };
